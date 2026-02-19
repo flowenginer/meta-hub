@@ -164,7 +164,7 @@ export function MetaResourcesPanel({ integrationId }: Props) {
                       </div>
                       <div className="text-xs text-gray-500">
                         ID: {form.form_id}
-                        {form.details?.page_name && ` • Página: ${form.details.page_name}`}
+                        {form.details?.page_name && ` • Página: ${String(form.details.page_name)}`}
                       </div>
                     </div>
                     <span
