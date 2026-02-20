@@ -66,3 +66,19 @@ export interface StartOAuthResponse {
   url: string;
   state: string;
 }
+
+export interface SyncResourceResult {
+  found: number;
+  synced: number;
+  error?: string;
+  raw_response?: unknown;
+}
+
+export interface SyncResponse {
+  success: boolean;
+  sync: {
+    whatsapp: SyncResourceResult;
+    adAccounts: SyncResourceResult;
+    forms: SyncResourceResult;
+  };
+}

@@ -437,27 +437,89 @@ async function handleDisconnect(req: Request): Promise<Response> {
 }
 
 // ---------------------------------------------------------------------------
-// Sync Meta Resources — WhatsApp numbers, Ad Accounts, Forms
+// Route: POST /sync — Manually sync Meta resources with detailed feedback
 // ---------------------------------------------------------------------------
+async function handleSync(req: Request): Promise<Response> {
+  const user = await getUser(req);
+  const { integration_id } = await req.json();
+
+  if (!integration_id) return errorResponse("integration_id is required");
+
+  const admin = adminClient();
+
+  const { data: integration, error } = await admin
+    .from("integrations")
+    .select("*")
+    .eq("id", integration_id)
+    .is("deleted_at", null)
+    .single();
+
+  if (error || !integration) return errorResponse("Integration not found", 404);
+
+  // Verify user belongs to workspace
+  const { data: member } = await admin
+    .from("workspace_members")
+    .select("id")
+    .eq("workspace_id", integration.workspace_id)
+    .eq("user_id", user.id)
+    .is("deleted_at", null)
+    .single();
+
+  if (!member) return errorResponse("Not a member of this workspace", 403);
+
+  const accessToken = integration.settings?.access_token;
+  if (!accessToken) return errorResponse("No access token available. Reconnect the integration.", 400);
+
+  const results = await syncMetaResources(admin, integration_id, accessToken);
+
+  // Update last_synced_at
+  await admin
+    .from("integrations")
+    .update({ last_synced_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .eq("id", integration_id);
+
+  return json({ success: true, sync: results });
+}
+
+// ---------------------------------------------------------------------------
+// Sync Meta Resources — WhatsApp numbers, Ad Accounts, Forms
+// Returns detailed results of what was found/synced
+// ---------------------------------------------------------------------------
+interface SyncResults {
+  whatsapp: { found: number; synced: number; error?: string; raw_response?: unknown };
+  adAccounts: { found: number; synced: number; error?: string; raw_response?: unknown };
+  forms: { found: number; synced: number; error?: string; raw_response?: unknown };
+}
+
 async function syncMetaResources(
   admin: ReturnType<typeof createClient>,
   integrationId: string,
   accessToken: string
-) {
+): Promise<SyncResults> {
+  const results: SyncResults = {
+    whatsapp: { found: 0, synced: 0 },
+    adAccounts: { found: 0, synced: 0 },
+    forms: { found: 0, synced: 0 },
+  };
+
+  // --- WhatsApp Business Accounts ---
   try {
-    // Fetch WhatsApp Business Accounts
     const wabaRes = await fetch(
       `https://graph.facebook.com/v21.0/me/businesses?fields=id,name,owned_whatsapp_business_accounts{id,name,phone_numbers{id,display_phone_number,verified_name,quality_rating}}&access_token=${accessToken}`
     );
     const wabaData = await wabaRes.json();
+    console.log("[sync] WhatsApp raw:", JSON.stringify(wabaData));
 
-    if (wabaData.data) {
+    if (wabaData.error) {
+      results.whatsapp.error = wabaData.error.message;
+    } else if (wabaData.data) {
       for (const biz of wabaData.data) {
         const wabas = biz.owned_whatsapp_business_accounts?.data || [];
         for (const waba of wabas) {
           const phones = waba.phone_numbers?.data || [];
           for (const phone of phones) {
-            await admin
+            results.whatsapp.found++;
+            const { error: upsertErr } = await admin
               .from("meta_whatsapp_numbers")
               .upsert(
                 {
@@ -473,26 +535,44 @@ async function syncMetaResources(
                 },
                 { onConflict: "integration_id,phone_number_id" }
               );
+            if (upsertErr) {
+              console.error("[sync] WA upsert error:", upsertErr.message);
+              results.whatsapp.error = upsertErr.message;
+            } else {
+              results.whatsapp.synced++;
+            }
           }
         }
       }
     }
+    if (results.whatsapp.found === 0 && !results.whatsapp.error) {
+      results.whatsapp.raw_response = wabaData;
+    }
+  } catch (err) {
+    results.whatsapp.error = (err as Error).message;
+    console.error("[sync] WhatsApp error:", err);
+  }
 
-    // Fetch Ad Accounts
+  // --- Ad Accounts ---
+  try {
     const adRes = await fetch(
       `https://graph.facebook.com/v21.0/me/adaccounts?fields=account_id,name,currency,timezone_name,account_status&access_token=${accessToken}`
     );
     const adData = await adRes.json();
+    console.log("[sync] Ad Accounts raw:", JSON.stringify(adData));
 
-    if (adData.data) {
+    if (adData.error) {
+      results.adAccounts.error = adData.error.message;
+    } else if (adData.data) {
       for (const account of adData.data) {
+        results.adAccounts.found++;
         const statusMap: Record<number, string> = {
           1: "active", 2: "disabled", 3: "unsettled",
           7: "pending_risk_review", 9: "in_grace_period",
           100: "pending_settlement", 101: "pending_closure",
         };
 
-        await admin
+        const { error: upsertErr } = await admin
           .from("meta_ad_accounts")
           .upsert(
             {
@@ -507,20 +587,38 @@ async function syncMetaResources(
             },
             { onConflict: "integration_id,ad_account_id" }
           );
+        if (upsertErr) {
+          console.error("[sync] Ad upsert error:", upsertErr.message);
+          results.adAccounts.error = upsertErr.message;
+        } else {
+          results.adAccounts.synced++;
+        }
       }
     }
+    if (results.adAccounts.found === 0 && !results.adAccounts.error) {
+      results.adAccounts.raw_response = adData;
+    }
+  } catch (err) {
+    results.adAccounts.error = (err as Error).message;
+    console.error("[sync] Ad Accounts error:", err);
+  }
 
-    // Fetch Lead Forms (from pages)
+  // --- Lead Forms (from pages) ---
+  try {
     const pagesRes = await fetch(
       `https://graph.facebook.com/v21.0/me/accounts?fields=id,name,leadgen_forms{id,name,status}&access_token=${accessToken}`
     );
     const pagesData = await pagesRes.json();
+    console.log("[sync] Forms/Pages raw:", JSON.stringify(pagesData));
 
-    if (pagesData.data) {
+    if (pagesData.error) {
+      results.forms.error = pagesData.error.message;
+    } else if (pagesData.data) {
       for (const page of pagesData.data) {
-        const forms = page.leadgen_forms?.data || [];
-        for (const form of forms) {
-          await admin
+        const pageForms = page.leadgen_forms?.data || [];
+        for (const form of pageForms) {
+          results.forms.found++;
+          const { error: upsertErr } = await admin
             .from("meta_forms")
             .upsert(
               {
@@ -534,13 +632,25 @@ async function syncMetaResources(
               },
               { onConflict: "integration_id,form_id" }
             );
+          if (upsertErr) {
+            console.error("[sync] Form upsert error:", upsertErr.message);
+            results.forms.error = upsertErr.message;
+          } else {
+            results.forms.synced++;
+          }
         }
       }
     }
+    if (results.forms.found === 0 && !results.forms.error) {
+      results.forms.raw_response = pagesData;
+    }
   } catch (err) {
-    // Log but don't fail the main operation
-    console.error("Resource sync error:", err);
+    results.forms.error = (err as Error).message;
+    console.error("[sync] Forms error:", err);
   }
+
+  console.log("[sync] Results:", JSON.stringify(results));
+  return results;
 }
 
 // ---------------------------------------------------------------------------
@@ -565,10 +675,12 @@ serve(async (req: Request) => {
         return await handleRefresh(req);
       case "disconnect":
         return await handleDisconnect(req);
+      case "sync":
+        return await handleSync(req);
       case "health":
         // Health check — verify deployed version and env vars (no secrets exposed)
         return json({
-          version: "v11",
+          version: "v12",
           ok: true,
           timestamp: new Date().toISOString(),
           env: {

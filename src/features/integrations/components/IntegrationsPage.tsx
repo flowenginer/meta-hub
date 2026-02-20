@@ -2,7 +2,7 @@
 // Page: Integrations — List and manage connected Meta integrations
 // ============================================================================
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { useIntegrations } from "@/features/integrations/hooks/useIntegrations";
 import { IntegrationCard } from "./IntegrationCard";
@@ -24,17 +24,26 @@ export function IntegrationsPage() {
     isRefreshing,
     disconnectIntegration,
     isDisconnecting,
+    syncResources,
+    isSyncing,
   } = useIntegrations(workspaceId!);
 
   const justConnected = searchParams.get("connected") === "true";
   const callbackError = searchParams.get("error");
+
+  // Auto-expand the first integration after OAuth callback
+  useEffect(() => {
+    if (justConnected && integrations.length > 0 && !selectedIntegration) {
+      setSelectedIntegration(integrations[0]);
+    }
+  }, [justConnected, integrations, selectedIntegration]);
 
   const handleConnect = async () => {
     setErrorMessage(null);
     try {
       await startOAuth();
     } catch (err) {
-      setErrorMessage((err as Error).message || "Falha ao iniciar conexão com o Meta");
+      setErrorMessage((err as Error).message || "Falha ao iniciar conex\u00e3o com o Meta");
     }
   };
 
@@ -48,7 +57,7 @@ export function IntegrationsPage() {
   };
 
   const handleDisconnect = async (integrationId: string) => {
-    if (!confirm("Tem certeza que deseja desconectar esta integração? Todos os dados serão removidos.")) {
+    if (!confirm("Tem certeza que deseja desconectar esta integra\u00e7\u00e3o? Todos os dados ser\u00e3o removidos.")) {
       return;
     }
     setErrorMessage(null);
@@ -80,11 +89,11 @@ export function IntegrationsPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl font-bold text-gray-900">Integrações</h2>
+        <h2 className="text-2xl font-bold text-gray-900">Integra\u00e7\u00f5es</h2>
         <button
           onClick={handleConnect}
           disabled={isStartingOAuth}
-          className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 
+          className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600
                      rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
@@ -96,7 +105,7 @@ export function IntegrationsPage() {
 
       {justConnected && (
         <div className="bg-green-50 text-green-700 p-4 rounded-lg mb-6 text-sm flex items-center justify-between">
-          <span>Integração conectada com sucesso! Os recursos do Meta foram sincronizados.</span>
+          <span>Integra\u00e7\u00e3o conectada com sucesso! Clique em "Sincronizar recursos" para buscar seus dados do Meta.</span>
           <button onClick={dismissMessages} className="text-green-500 hover:text-green-700 ml-4">&times;</button>
         </div>
       )}
@@ -110,18 +119,18 @@ export function IntegrationsPage() {
 
       {integrations.length === 0 ? (
         <div className="bg-white border rounded-lg p-12 text-center">
-          <div className="text-4xl mb-4">🔗</div>
+          <div className="text-4xl mb-4">{"\u{1F517}"}</div>
           <h3 className="text-lg font-semibold text-gray-900 mb-2">
-            Nenhuma integração conectada
+            Nenhuma integra\u00e7\u00e3o conectada
           </h3>
           <p className="text-gray-600 mb-6 max-w-md mx-auto">
-            Conecte sua conta Meta para começar a receber leads do WhatsApp, 
-            Ads e Formulários.
+            Conecte sua conta Meta para come\u00e7ar a receber leads do WhatsApp,
+            Ads e Formul\u00e1rios.
           </p>
           <button
             onClick={handleConnect}
             disabled={isStartingOAuth}
-            className="px-6 py-2 text-sm font-medium text-white bg-blue-600 
+            className="px-6 py-2 text-sm font-medium text-white bg-blue-600
                        rounded-md hover:bg-blue-700 disabled:opacity-50"
           >
             {isStartingOAuth ? "Conectando..." : "Conectar conta Meta"}
@@ -130,26 +139,33 @@ export function IntegrationsPage() {
       ) : (
         <div className="space-y-4">
           {integrations.map((integration) => (
-            <IntegrationCard
-              key={integration.id}
-              integration={integration}
-              isSelected={selectedIntegration?.id === integration.id}
-              onSelect={() =>
-                setSelectedIntegration(
-                  selectedIntegration?.id === integration.id ? null : integration
-                )
-              }
-              onRefresh={() => handleRefresh(integration.id)}
-              onDisconnect={() => handleDisconnect(integration.id)}
-              isRefreshing={isRefreshing}
-              isDisconnecting={isDisconnecting}
-            />
-          ))}
+            <div key={integration.id}>
+              <IntegrationCard
+                integration={integration}
+                isSelected={selectedIntegration?.id === integration.id}
+                onSelect={() =>
+                  setSelectedIntegration(
+                    selectedIntegration?.id === integration.id ? null : integration
+                  )
+                }
+                onRefresh={() => handleRefresh(integration.id)}
+                onDisconnect={() => handleDisconnect(integration.id)}
+                isRefreshing={isRefreshing}
+                isDisconnecting={isDisconnecting}
+              />
 
-          {/* Resources panel */}
-          {selectedIntegration && (
-            <MetaResourcesPanel integrationId={selectedIntegration.id} />
-          )}
+              {/* Resources panel — shown when integration is selected */}
+              {selectedIntegration?.id === integration.id && (
+                <div className="mt-2">
+                  <MetaResourcesPanel
+                    integrationId={integration.id}
+                    onSync={syncResources}
+                    isSyncing={isSyncing}
+                  />
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>
