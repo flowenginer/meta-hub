@@ -311,7 +311,8 @@ function getWhatsAppEventType(value: Record<string, unknown>): string {
 
 // ---------------------------------------------------------------------------
 // Check if a route's filter_rules allow an event type
-// Handles all possible DB values: null, [], {}, { event_types: [...] }
+// null / undefined / [] / non-object → no filter → accept everything
+// { event_types: ["messages"] }     → only listed types pass through
 // ---------------------------------------------------------------------------
 function routeAcceptsEventType(
   route: MatchedRoute,
@@ -319,17 +320,25 @@ function routeAcceptsEventType(
 ): boolean {
   const rules = route.filter_rules;
 
-  // No filter_rules = accept everything
-  if (!rules || Array.isArray(rules)) return true;
+  // No filter configured → accept everything
+  if (!rules || Array.isArray(rules) || typeof rules !== "object") {
+    console.log(`[filter] Route ${route.route_id}: no filter (rules=${JSON.stringify(rules)}) → accept all`);
+    return true;
+  }
 
-  // No event_types array or empty = accept everything
+  // No event_types key, or empty list → accept everything
   const eventTypes = rules.event_types;
-  if (!eventTypes || !Array.isArray(eventTypes) || eventTypes.length === 0) return true;
+  if (!eventTypes || !Array.isArray(eventTypes) || eventTypes.length === 0) {
+    console.log(`[filter] Route ${route.route_id}: no event_types in rules → accept all`);
+    return true;
+  }
 
   // Unknown event types always pass through (safety net)
   if (eventType === "unknown") return true;
 
-  return eventTypes.includes(eventType);
+  const accepted = eventTypes.includes(eventType);
+  console.log(`[filter] Route ${route.route_id}: event_types=${JSON.stringify(eventTypes)}, checking ${eventType} → ${accepted ? "ACCEPT" : "REJECT"}`);
+  return accepted;
 }
 
 // ---------------------------------------------------------------------------

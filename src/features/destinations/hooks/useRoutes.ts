@@ -38,7 +38,7 @@ async function createRoute(
       workspace_id: workspaceId,
       created_by: userId,
       source_id: payload.source_id || null,
-      filter_rules: payload.filter_rules || null,
+      filter_rules: payload.filter_rules ?? undefined,
     })
     .select(`*, destination:destinations(id, name, url, is_active)`)
     .single();
