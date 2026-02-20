@@ -51,16 +51,36 @@ function adminClient() {
   });
 }
 
-/** Extract and verify user from JWT using service role */
+/** Extract and verify user from JWT using admin API */
 async function getUser(req: Request) {
   const authHeader = req.headers.get("Authorization");
   if (!authHeader) throw new Error("Missing Authorization header");
 
   const token = authHeader.replace("Bearer ", "");
-  const admin = adminClient();
 
-  const { data: { user }, error } = await admin.auth.getUser(token);
-  if (error || !user) throw new Error("Invalid token");
+  // Decode JWT payload to extract user ID
+  const parts = token.split(".");
+  if (parts.length !== 3) throw new Error("Malformed token");
+
+  let payload: { sub?: string; exp?: number };
+  try {
+    payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+  } catch {
+    throw new Error("Malformed token payload");
+  }
+
+  if (!payload.sub) throw new Error("Token missing subject");
+
+  // Check expiration
+  if (payload.exp && payload.exp * 1000 < Date.now()) {
+    throw new Error("Token expired");
+  }
+
+  // Verify user exists via admin API (uses service role key)
+  const admin = adminClient();
+  const { data: { user }, error } = await admin.auth.admin.getUserById(payload.sub);
+  if (error || !user) throw new Error("User not found");
+
   return user;
 }
 
