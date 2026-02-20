@@ -598,8 +598,20 @@ async function handleDisconnect(req: Request): Promise<Response> {
   return jsonResponse({ ok: true });
 }
 
+/** Escape HTML to prevent XSS */
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 /** Return HTML page that communicates with popup opener and closes */
 function callbackHtml(success: boolean, errorMessage?: string): Response {
+  const safeError = errorMessage ? escapeHtml(errorMessage) : "Erro desconhecido";
+
   const html = `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -626,14 +638,13 @@ function callbackHtml(success: boolean, errorMessage?: string): Response {
     .icon { font-size: 3rem; margin-bottom: 1rem; }
     h2 { color: #111827; margin: 0 0 0.5rem; }
     p { color: #6b7280; margin: 0; }
-    .error { color: #dc2626; }
   </style>
 </head>
 <body>
   <div class="card">
-    <div class="icon">${success ? "✅" : "❌"}</div>
-    <h2>${success ? "Integração conectada!" : "Falha na conexão"}</h2>
-    <p>${success ? "Fechando esta janela..." : (errorMessage || "Erro desconhecido")}</p>
+    <div class="icon">${success ? "&#9989;" : "&#10060;"}</div>
+    <h2>${success ? "Integra&#231;&#227;o conectada!" : "Falha na conex&#227;o"}</h2>
+    <p>${success ? "Fechando esta janela..." : safeError}</p>
     ${!success ? '<p style="margin-top:1rem;"><a href="javascript:window.close()">Fechar janela</a></p>' : ""}
   </div>
   <script>
