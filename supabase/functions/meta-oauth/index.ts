@@ -53,35 +53,51 @@ function adminClient() {
 
 /** Extract and verify user from JWT using admin API */
 async function getUser(req: Request) {
+  // Step 1: Check Authorization header
   const authHeader = req.headers.get("Authorization");
-  if (!authHeader) throw new Error("Missing Authorization header");
+  console.log("[getUser] step1 authHeader present:", !!authHeader);
+  if (!authHeader) {
+    console.log("[getUser] All headers:", JSON.stringify(Object.fromEntries(req.headers.entries())));
+    throw new Error("Missing Authorization header");
+  }
 
+  // Step 2: Extract token
   const token = authHeader.replace("Bearer ", "");
+  console.log("[getUser] step2 token length:", token.length, "starts:", token.substring(0, 20));
 
-  // Decode JWT payload to extract user ID
+  // Step 3: Decode JWT payload
   const parts = token.split(".");
-  if (parts.length !== 3) throw new Error("Malformed token");
+  if (parts.length !== 3) throw new Error("Malformed token: " + parts.length + " parts");
 
-  let payload: { sub?: string; exp?: number };
+  let payload: { sub?: string; exp?: number; role?: string };
   try {
     payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
-  } catch {
-    throw new Error("Malformed token payload");
+  } catch (e) {
+    throw new Error("Malformed token payload: " + (e as Error).message);
   }
+
+  console.log("[getUser] step3 payload sub:", payload.sub, "role:", payload.role, "exp:", payload.exp);
 
   if (!payload.sub) throw new Error("Token missing subject");
 
-  // Check expiration
+  // Step 4: Check expiration
   if (payload.exp && payload.exp * 1000 < Date.now()) {
-    throw new Error("Token expired");
+    throw new Error("Token expired at " + new Date(payload.exp * 1000).toISOString());
   }
 
-  // Verify user exists via admin API (uses service role key)
-  const admin = adminClient();
-  const { data: { user }, error } = await admin.auth.admin.getUserById(payload.sub);
-  if (error || !user) throw new Error("User not found");
+  // Step 5: Verify user exists via admin API
+  console.log("[getUser] step5 calling admin.getUserById:", payload.sub);
+  console.log("[getUser] SUPABASE_URL:", SUPABASE_URL);
+  console.log("[getUser] SERVICE_ROLE_KEY present:", !!SUPABASE_SERVICE_ROLE_KEY, "length:", SUPABASE_SERVICE_ROLE_KEY?.length);
 
-  return user;
+  const admin = adminClient();
+  const { data, error } = await admin.auth.admin.getUserById(payload.sub);
+  console.log("[getUser] step5 result - error:", error?.message, "user:", !!data?.user);
+
+  if (error) throw new Error("Admin getUserById failed: " + error.message);
+  if (!data?.user) throw new Error("User not found for id: " + payload.sub);
+
+  return data.user;
 }
 
 /** JSON response helper */
@@ -569,17 +585,27 @@ serve(async (req: Request) => {
         return await handleRefresh(req);
       case "disconnect":
         return await handleDisconnect(req);
+      case "debug":
+        // Temporary debug endpoint — remove after fixing
+        return json({
+          supabase_url: SUPABASE_URL,
+          service_role_key_present: !!SUPABASE_SERVICE_ROLE_KEY,
+          service_role_key_length: SUPABASE_SERVICE_ROLE_KEY?.length ?? 0,
+          service_role_key_prefix: SUPABASE_SERVICE_ROLE_KEY?.substring(0, 10) ?? "MISSING",
+          meta_app_id_present: !!META_APP_ID,
+          meta_app_secret_present: !!META_APP_SECRET,
+          app_url: APP_URL,
+          auth_header_present: !!req.headers.get("Authorization"),
+          auth_header_prefix: req.headers.get("Authorization")?.substring(0, 20) ?? "MISSING",
+          all_headers: Object.fromEntries(req.headers.entries()),
+        });
       default:
         return errorResponse(`Unknown route: ${path}`, 404);
     }
   } catch (err) {
     const message = (err as Error).message || "Internal server error";
     console.error(`[meta-oauth] ${path}:`, message);
-
-    // Return 401 for auth-related errors
-    if (message.includes("Authorization") || message.includes("Invalid token")) {
-      return errorResponse(message, 401);
-    }
-    return errorResponse(message, 500);
+    // Return the actual error message for debugging
+    return errorResponse(message, 401);
   }
 });
