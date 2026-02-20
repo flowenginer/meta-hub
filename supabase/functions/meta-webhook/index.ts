@@ -34,6 +34,35 @@ function json(data: unknown, status = 200) {
 }
 
 // ---------------------------------------------------------------------------
+// Log helper — writes to event_logs table for visibility in the UI
+// ---------------------------------------------------------------------------
+async function writeLog(
+  admin: ReturnType<typeof createClient>,
+  workspaceId: string | null,
+  level: string,
+  category: string,
+  action: string,
+  message: string,
+  metadata: Record<string, unknown> = {},
+  durationMs?: number,
+) {
+  if (!workspaceId) return;
+  try {
+    await admin.from("event_logs").insert({
+      workspace_id: workspaceId,
+      level,
+      category,
+      action,
+      message,
+      metadata,
+      duration_ms: durationMs,
+    });
+  } catch (err) {
+    console.error("[webhook] Failed to write log:", err);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // GET — Meta webhook verification (challenge-response)
 // ---------------------------------------------------------------------------
 function handleVerification(req: Request): Response {
@@ -290,8 +319,20 @@ async function processWhatsAppEntries(
 
       if (routes.length === 0) {
         console.log(`[webhook] No routes found for whatsapp source_id=${phoneNumberId}`);
+        // Log to first workspace we can find (best effort)
         continue;
       }
+
+      // Log webhook reception
+      await writeLog(
+        admin,
+        routes[0]?.workspace_id || null,
+        "info",
+        "webhook",
+        "webhook.received",
+        `WhatsApp webhook recebido: ${change.field} de phone_number_id=${phoneNumberId}`,
+        { waba_id: entry.id, field: change.field, phone_number_id: phoneNumberId, routes_matched: routes.length },
+      );
 
       // Create delivery events and deliver
       for (const route of routes) {
@@ -305,6 +346,7 @@ async function processWhatsAppEntries(
             source_event_id: phoneNumberId,
             payload,
             status: "pending",
+            next_retry_at: new Date().toISOString(),
             metadata: {
               waba_id: entry.id,
               field: change.field,
@@ -316,13 +358,24 @@ async function processWhatsAppEntries(
 
         if (error) {
           console.error("[webhook] Failed to create delivery event:", error.message);
+          await writeLog(admin, route.workspace_id, "error", "delivery", "delivery.create_failed", `Falha ao criar evento de delivery: ${error.message}`, { route_id: route.route_id });
           continue;
         }
 
         // Deliver immediately (fire-and-forget within this invocation)
-        deliverToDestination(admin, event.id, route, payload).catch((err) => {
-          console.error("[webhook] Delivery error:", err);
-        });
+        deliverToDestination(admin, event.id, route, payload)
+          .then((success) => {
+            writeLog(admin, route.workspace_id, success ? "info" : "warn", "delivery",
+              success ? "delivery.success" : "delivery.failed",
+              success
+                ? `Entregue para ${route.destination_url}`
+                : `Falha na entrega para ${route.destination_url}`,
+              { event_id: event.id, destination_url: route.destination_url });
+          })
+          .catch((err) => {
+            console.error("[webhook] Delivery error:", err);
+            writeLog(admin, route.workspace_id, "error", "delivery", "delivery.error", `Erro de delivery: ${(err as Error).message}`, { event_id: event.id });
+          });
 
         processed++;
       }
@@ -377,6 +430,17 @@ async function processLeadGenEntries(
         continue;
       }
 
+      // Log webhook reception
+      await writeLog(
+        admin,
+        routes[0]?.workspace_id || null,
+        "info",
+        "webhook",
+        "webhook.received",
+        `LeadGen webhook recebido: form_id=${formId}, page_id=${pageId}`,
+        { page_id: pageId, form_id: formId, routes_matched: routes.length },
+      );
+
       for (const route of routes) {
         // Optionally fetch full lead data using page access token
         let enrichedPayload = payload;
@@ -402,6 +466,7 @@ async function processLeadGenEntries(
             source_event_id: formId,
             payload: enrichedPayload,
             status: "pending",
+            next_retry_at: new Date().toISOString(),
             metadata: {
               page_id: pageId,
               form_id: formId,
@@ -488,6 +553,7 @@ async function fetchLeadData(
 // POST — Handle incoming Meta webhook events
 // ---------------------------------------------------------------------------
 async function handleWebhookPost(req: Request): Promise<Response> {
+  const startTime = Date.now();
   const body = await req.json();
   const admin = adminClient();
 
@@ -497,6 +563,7 @@ async function handleWebhookPost(req: Request): Promise<Response> {
   const entries = body.entry || [];
 
   if (!object || entries.length === 0) {
+    console.log("[webhook] Ignored — no entries");
     return json({ status: "ignored", reason: "no entries" });
   }
 
@@ -510,7 +577,8 @@ async function handleWebhookPost(req: Request): Promise<Response> {
     console.log(`[webhook] Unsupported object type: ${object}`);
   }
 
-  console.log(`[webhook] Processed ${processed} delivery events`);
+  const durationMs = Date.now() - startTime;
+  console.log(`[webhook] Processed ${processed} delivery events in ${durationMs}ms`);
 
   // Meta expects 200 response quickly — don't block on delivery
   return json({ status: "ok", processed });

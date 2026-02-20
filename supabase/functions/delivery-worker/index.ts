@@ -223,12 +223,13 @@ async function deliverEvent(
 async function handleProcess(_req: Request): Promise<Response> {
   const admin = adminClient();
 
-  // Find events ready for retry
+  // Find events ready for retry (includes events with next_retry_at <= now OR NULL)
+  const now = new Date().toISOString();
   const { data: events, error } = await admin
     .from("delivery_events")
     .select("id")
     .in("status", ["pending", "failed"])
-    .lte("next_retry_at", new Date().toISOString())
+    .or(`next_retry_at.lte.${now},next_retry_at.is.null`)
     .order("created_at", { ascending: true })
     .limit(50);
 
