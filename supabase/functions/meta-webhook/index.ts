@@ -400,6 +400,20 @@ async function processWhatsAppEntries(
 
       // Create delivery events and deliver
       for (const route of routes) {
+        // Deduplication: skip if this source_event_id was already processed for this route
+        const { data: existing } = await admin
+          .from("delivery_events")
+          .select("id")
+          .eq("source_event_id", sourceEventId)
+          .eq("route_id", route.route_id)
+          .limit(1)
+          .maybeSingle();
+
+        if (existing) {
+          console.log(`[webhook] Duplicate skipped: source_event_id=${sourceEventId} route=${route.route_id}`);
+          continue;
+        }
+
         const { data: event, error } = await admin
           .from("delivery_events")
           .insert({
@@ -615,11 +629,11 @@ async function fetchLeadData(
 
 // ---------------------------------------------------------------------------
 // POST — Handle incoming Meta webhook events
+// Meta expects a 200 response within ~15s or it will retry.
+// We respond immediately and process in the background.
 // ---------------------------------------------------------------------------
 async function handleWebhookPost(req: Request): Promise<Response> {
-  const startTime = Date.now();
   const body = await req.json();
-  const admin = adminClient();
 
   console.log("[webhook] Received:", JSON.stringify(body).slice(0, 1000));
 
@@ -631,21 +645,34 @@ async function handleWebhookPost(req: Request): Promise<Response> {
     return json({ status: "ignored", reason: "no entries" });
   }
 
-  let processed = 0;
+  // Process in background — respond 200 immediately to avoid Meta retries
+  const backgroundProcess = (async () => {
+    const startTime = Date.now();
+    const admin = adminClient();
+    let processed = 0;
 
-  if (object === "whatsapp_business_account") {
-    processed = await processWhatsAppEntries(admin, entries);
-  } else if (object === "page") {
-    processed = await processLeadGenEntries(admin, entries);
-  } else {
-    console.log(`[webhook] Unsupported object type: ${object}`);
+    try {
+      if (object === "whatsapp_business_account") {
+        processed = await processWhatsAppEntries(admin, entries);
+      } else if (object === "page") {
+        processed = await processLeadGenEntries(admin, entries);
+      } else {
+        console.log(`[webhook] Unsupported object type: ${object}`);
+      }
+    } catch (err) {
+      console.error("[webhook] Background processing error:", err);
+    }
+
+    const durationMs = Date.now() - startTime;
+    console.log(`[webhook] Processed ${processed} delivery events in ${durationMs}ms`);
+  })();
+
+  // Keep the background process alive (Deno edge runtime)
+  if (typeof (globalThis as any).EdgeRuntime !== "undefined") {
+    (globalThis as any).EdgeRuntime.waitUntil(backgroundProcess);
   }
 
-  const durationMs = Date.now() - startTime;
-  console.log(`[webhook] Processed ${processed} delivery events in ${durationMs}ms`);
-
-  // Meta expects 200 response quickly — don't block on delivery
-  return json({ status: "ok", processed });
+  return json({ status: "ok" });
 }
 
 // ---------------------------------------------------------------------------
