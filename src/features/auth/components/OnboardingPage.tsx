@@ -5,7 +5,7 @@
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useNavigate } from "react-router-dom";
+import { Navigate, useNavigate } from "react-router-dom";
 import { useWorkspaces } from "@/features/workspaces/hooks/useWorkspaces";
 import { useAuth } from "@/features/auth/hooks/useAuth";
 import { createWorkspaceSchema, type CreateWorkspaceFormData } from "@/lib/schemas";
@@ -21,7 +21,7 @@ function toSlug(name: string): string {
 
 export function OnboardingPage() {
   const { user } = useAuth();
-  const { createWorkspace, isCreating, refetch } = useWorkspaces();
+  const { workspaces, isLoading, createWorkspace, isCreating, refetch } = useWorkspaces();
   const navigate = useNavigate();
   const [serverError, setServerError] = useState<string | null>(null);
 
@@ -53,6 +53,20 @@ export function OnboardingPage() {
       setServerError((err as Error).message);
     }
   };
+
+  // Loading enquanto verifica workspaces existentes
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
+      </div>
+    );
+  }
+
+  // Se já tem workspaces, redireciona para o mais recente
+  if (workspaces.length > 0) {
+    return <Navigate to={`/workspace/${workspaces[0].id}`} replace />;
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
@@ -109,7 +123,7 @@ export function OnboardingPage() {
           <button
             type="submit"
             disabled={isCreating}
-            className="w-full bg-blue-600 text-white py-2 rounded-md hover:bg-blue-700 
+            className="w-full bg-blue-600 text-white py-2 rounded-md hover:bg-blue-700
                        disabled:opacity-50 disabled:cursor-not-allowed font-medium"
           >
             {isCreating ? "Criando..." : "Criar workspace"}
