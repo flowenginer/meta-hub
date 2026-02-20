@@ -319,6 +319,8 @@ function routeAcceptsEventType(
   const rules = route.filter_rules;
   // No filter_rules or no event_types = accept everything
   if (!rules || !rules.event_types || rules.event_types.length === 0) return true;
+  // Unknown event types always pass through (safety net)
+  if (eventType === "unknown") return true;
   return rules.event_types.includes(eventType);
 }
 
