@@ -2,9 +2,6 @@
 # Supabase CLI Configuration — MetaHub
 # ============================================================================
 
-[project]
-id = "wpredsntrdkmqlyfqkz"
-
 [api]
 enabled = true
 port = 54321
