@@ -133,8 +133,8 @@ export function useIntegrations(workspaceId: string) {
   const startOAuthMutation = useMutation({
     mutationFn: () => startOAuth(workspaceId),
     onSuccess: (data) => {
-      // Open OAuth URL in new window
-      window.open(data.url, "_blank", "width=600,height=700");
+      // Redirect to Meta OAuth in the same window
+      window.location.href = data.url;
     },
   });
 
