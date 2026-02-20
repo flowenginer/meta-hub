@@ -7,6 +7,12 @@ export type HttpMethod = "POST" | "PUT" | "PATCH";
 export type SourceType = "whatsapp" | "forms" | "ads" | "webhook";
 export type DeliveryStatus = "pending" | "processing" | "delivered" | "failed" | "dlq" | "cancelled";
 
+export type WhatsAppEventType = "messages" | "status_sent" | "status_delivered" | "status_read" | "status_failed";
+
+export interface FilterRules {
+  event_types?: WhatsAppEventType[];
+}
+
 export interface Destination {
   id: string;
   workspace_id: string;
@@ -34,7 +40,7 @@ export interface Route {
   destination_id: string;
   is_active: boolean;
   priority: number;
-  filter_rules: unknown[];
+  filter_rules: FilterRules | null;
   mapping_id: string | null;
   description: string | null;
   created_by: string | null;
@@ -105,5 +111,6 @@ export interface RouteFormData {
   destination_id: string;
   is_active: boolean;
   priority: number;
+  filter_rules?: FilterRules | null;
   description?: string;
 }

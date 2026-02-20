@@ -5,7 +5,8 @@
 import { useState, useEffect } from "react";
 import { useRoutes } from "@/features/destinations/hooks/useRoutes";
 import { useDestinations } from "@/features/destinations/hooks/useDestinations";
-import type { Route, SourceType } from "@/types/destinations";
+import { useIntegrations, useMetaResources } from "@/features/integrations/hooks/useIntegrations";
+import type { Route, SourceType, WhatsAppEventType, FilterRules } from "@/types/destinations";
 
 interface Props {
   isOpen: boolean;
@@ -21,9 +22,23 @@ const sourceOptions: { value: SourceType; label: string }[] = [
   { value: "webhook", label: "🔗 Webhook genérico" },
 ];
 
+const eventTypeOptions: { value: WhatsAppEventType; label: string; description: string }[] = [
+  { value: "messages", label: "Mensagens", description: "Mensagens recebidas de contatos" },
+  { value: "status_sent", label: "Status: Enviado", description: "Confirmação de envio" },
+  { value: "status_delivered", label: "Status: Entregue", description: "Confirmação de entrega" },
+  { value: "status_read", label: "Status: Lido", description: "Confirmação de leitura" },
+];
+
 export function RouteForm({ isOpen, onClose, workspaceId, editingRoute }: Props) {
   const { createRoute, isCreating, updateRoute, isUpdating } = useRoutes(workspaceId);
   const { destinations } = useDestinations(workspaceId);
+  const { integrations } = useIntegrations(workspaceId);
+
+  // Find connected Meta integration to load resources
+  const metaIntegration = integrations.find(
+    (i) => i.provider === "meta" && i.status === "connected"
+  );
+  const { whatsappNumbers, forms } = useMetaResources(metaIntegration?.id || "");
 
   const [name, setName] = useState("");
   const [sourceType, setSourceType] = useState<SourceType>("forms");
@@ -32,6 +47,7 @@ export function RouteForm({ isOpen, onClose, workspaceId, editingRoute }: Props)
   const [priority, setPriority] = useState(0);
   const [isActive, setIsActive] = useState(true);
   const [description, setDescription] = useState("");
+  const [eventTypes, setEventTypes] = useState<WhatsAppEventType[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -43,12 +59,24 @@ export function RouteForm({ isOpen, onClose, workspaceId, editingRoute }: Props)
       setPriority(editingRoute.priority);
       setIsActive(editingRoute.is_active);
       setDescription(editingRoute.description || "");
+      // Load filter_rules
+      const rules = editingRoute.filter_rules as FilterRules | null;
+      setEventTypes(rules?.event_types || []);
     } else {
       setName(""); setSourceType("forms"); setSourceId("");
       setDestinationId(""); setPriority(0); setIsActive(true); setDescription("");
+      setEventTypes([]);
     }
     setError(null);
   }, [editingRoute, isOpen]);
+
+  const handleEventTypeToggle = (eventType: WhatsAppEventType) => {
+    setEventTypes((prev) =>
+      prev.includes(eventType)
+        ? prev.filter((t) => t !== eventType)
+        : [...prev, eventType]
+    );
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -64,6 +92,12 @@ export function RouteForm({ isOpen, onClose, workspaceId, editingRoute }: Props)
       return;
     }
 
+    // Build filter_rules
+    const filterRules: FilterRules | null =
+      sourceType === "whatsapp" && eventTypes.length > 0
+        ? { event_types: eventTypes }
+        : null;
+
     const payload = {
       name: name.trim(),
       source_type: sourceType,
@@ -71,6 +105,7 @@ export function RouteForm({ isOpen, onClose, workspaceId, editingRoute }: Props)
       destination_id: destinationId,
       is_active: isActive,
       priority,
+      filter_rules: filterRules,
       description: description.trim() || undefined,
     };
 
@@ -93,7 +128,7 @@ export function RouteForm({ isOpen, onClose, workspaceId, editingRoute }: Props)
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="fixed inset-0 bg-black/50" onClick={onClose} />
-      <div className="relative bg-white rounded-lg shadow-xl w-full max-w-lg mx-4 p-6">
+      <div className="relative bg-white rounded-lg shadow-xl w-full max-w-lg mx-4 p-6 max-h-[90vh] overflow-y-auto">
         <h2 className="text-lg font-semibold text-gray-900 mb-4">
           {editingRoute ? "Editar rota" : "Nova rota"}
         </h2>
@@ -126,7 +161,11 @@ export function RouteForm({ isOpen, onClose, workspaceId, editingRoute }: Props)
             <label className="block text-sm font-medium text-gray-700 mb-1">Origem (source)</label>
             <select
               value={sourceType}
-              onChange={(e) => setSourceType(e.target.value as SourceType)}
+              onChange={(e) => {
+                setSourceType(e.target.value as SourceType);
+                setSourceId("");
+                setEventTypes([]);
+              }}
               className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               {sourceOptions.map((opt) => (
@@ -135,22 +174,98 @@ export function RouteForm({ isOpen, onClose, workspaceId, editingRoute }: Props)
             </select>
           </div>
 
-          {/* Source ID (optional) */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              ID específico (opcional)
-            </label>
-            <input
-              type="text"
-              value={sourceId}
-              onChange={(e) => setSourceId(e.target.value)}
-              className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Deixe vazio para capturar todos do tipo"
-            />
-            <p className="text-xs text-gray-500 mt-1">
-              Ex: form_id, phone_number_id, ad_account_id. Vazio = todos eventos deste tipo.
-            </p>
-          </div>
+          {/* Source ID — Dynamic based on source_type */}
+          {sourceType === "whatsapp" && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Número WhatsApp
+              </label>
+              <select
+                value={sourceId}
+                onChange={(e) => setSourceId(e.target.value)}
+                className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">Todos os números</option>
+                {whatsappNumbers.map((num) => (
+                  <option key={num.phone_number_id} value={num.phone_number_id}>
+                    {num.display_name || num.phone_number} ({num.phone_number})
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-500 mt-1">
+                Selecione um número específico ou deixe "Todos" para capturar de todos os números.
+              </p>
+            </div>
+          )}
+
+          {sourceType === "forms" && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Formulário
+              </label>
+              <select
+                value={sourceId}
+                onChange={(e) => setSourceId(e.target.value)}
+                className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">Todos os formulários</option>
+                {forms.map((form) => (
+                  <option key={form.form_id} value={form.form_id}>
+                    {form.name || form.form_id}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-500 mt-1">
+                Selecione um formulário específico ou deixe "Todos" para capturar de todos.
+              </p>
+            </div>
+          )}
+
+          {sourceType !== "whatsapp" && sourceType !== "forms" && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                ID específico (opcional)
+              </label>
+              <input
+                type="text"
+                value={sourceId}
+                onChange={(e) => setSourceId(e.target.value)}
+                className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Deixe vazio para capturar todos do tipo"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Ex: ad_account_id. Vazio = todos eventos deste tipo.
+              </p>
+            </div>
+          )}
+
+          {/* Event Type Filter — WhatsApp only */}
+          {sourceType === "whatsapp" && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Tipos de evento
+              </label>
+              <p className="text-xs text-gray-500 mb-2">
+                Selecione quais eventos encaminhar. Vazio = todos os eventos.
+              </p>
+              <div className="space-y-2 bg-gray-50 rounded-md p-3">
+                {eventTypeOptions.map((opt) => (
+                  <label key={opt.value} className="flex items-start gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={eventTypes.includes(opt.value)}
+                      onChange={() => handleEventTypeToggle(opt.value)}
+                      className="w-4 h-4 mt-0.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    <div>
+                      <span className="text-sm text-gray-900">{opt.label}</span>
+                      <span className="text-xs text-gray-500 ml-1">— {opt.description}</span>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Destination */}
           <div>
