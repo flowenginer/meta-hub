@@ -93,7 +93,7 @@ async function handleStart(req: Request): Promise<Response> {
     .select("id")
     .eq("workspace_id", workspace_id)
     .eq("user_id", user.id)
-    .is("removed_at", null)
+    .is("deleted_at", null)
     .single();
 
   if (!member) return errorResponse("Not a member of this workspace", 403);
@@ -304,7 +304,7 @@ async function handleRefresh(req: Request): Promise<Response> {
     .select("id")
     .eq("workspace_id", integration.workspace_id)
     .eq("user_id", user.id)
-    .is("removed_at", null)
+    .is("deleted_at", null)
     .single();
 
   if (!member) return errorResponse("Not a member of this workspace", 403);
@@ -387,7 +387,7 @@ async function handleDisconnect(req: Request): Promise<Response> {
     .select("id")
     .eq("workspace_id", integration.workspace_id)
     .eq("user_id", user.id)
-    .is("removed_at", null)
+    .is("deleted_at", null)
     .single();
 
   if (!member) return errorResponse("Not a member of this workspace", 403);
@@ -552,7 +552,13 @@ serve(async (req: Request) => {
         return errorResponse(`Unknown route: ${path}`, 404);
     }
   } catch (err) {
-    console.error("Unhandled error:", err);
-    return errorResponse((err as Error).message || "Internal server error", 500);
+    const message = (err as Error).message || "Internal server error";
+    console.error(`[meta-oauth] ${path}:`, message);
+
+    // Return 401 for auth-related errors
+    if (message.includes("Authorization") || message.includes("Invalid token")) {
+      return errorResponse(message, 401);
+    }
+    return errorResponse(message, 500);
   }
 });
