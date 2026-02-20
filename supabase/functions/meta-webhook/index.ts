@@ -95,6 +95,7 @@ interface MatchedRoute {
   destination_auth_type: string;
   destination_auth_config: Record<string, string>;
   destination_timeout_ms: number;
+  filter_rules: { event_types?: string[] } | null;
 }
 
 async function findMatchingRoutes(
@@ -103,7 +104,7 @@ async function findMatchingRoutes(
   sourceId: string | null,
 ): Promise<MatchedRoute[]> {
   // Find routes where source matches — either exact source_id match or null (catch-all)
-  let query = admin
+  const query = admin
     .from("routes")
     .select(`
       id,
@@ -111,6 +112,7 @@ async function findMatchingRoutes(
       source_id,
       destination_id,
       priority,
+      filter_rules,
       destination:destinations(id, url, method, headers, auth_type, auth_config, timeout_ms, is_active)
     `)
     .eq("source_type", sourceType)
@@ -156,6 +158,7 @@ async function findMatchingRoutes(
       destination_auth_type: dest.auth_type,
       destination_auth_config: dest.auth_config || {},
       destination_timeout_ms: dest.timeout_ms || 10000,
+      filter_rules: route.filter_rules as { event_types?: string[] } | null,
     });
   }
 
@@ -285,6 +288,41 @@ async function deliverToDestination(
 }
 
 // ---------------------------------------------------------------------------
+// Determine WhatsApp event type from payload
+// ---------------------------------------------------------------------------
+function getWhatsAppEventType(value: Record<string, unknown>): string {
+  const messages = value.messages as Array<unknown> | undefined;
+  if (messages && messages.length > 0) return "messages";
+
+  const statuses = value.statuses as Array<{ status?: string }> | undefined;
+  if (statuses && statuses.length > 0) {
+    const status = statuses[0].status;
+    switch (status) {
+      case "sent": return "status_sent";
+      case "delivered": return "status_delivered";
+      case "read": return "status_read";
+      case "failed": return "status_failed";
+      default: return `status_${status}`;
+    }
+  }
+
+  return "unknown";
+}
+
+// ---------------------------------------------------------------------------
+// Check if a route's filter_rules allow an event type
+// ---------------------------------------------------------------------------
+function routeAcceptsEventType(
+  route: MatchedRoute,
+  eventType: string,
+): boolean {
+  const rules = route.filter_rules;
+  // No filter_rules or no event_types = accept everything
+  if (!rules || !rules.event_types || rules.event_types.length === 0) return true;
+  return rules.event_types.includes(eventType);
+}
+
+// ---------------------------------------------------------------------------
 // Process WhatsApp webhook entries
 // ---------------------------------------------------------------------------
 async function processWhatsAppEntries(
@@ -319,12 +357,31 @@ async function processWhatsAppEntries(
         received_at: new Date().toISOString(),
       };
 
+      // Determine event type for filtering
+      const eventType = getWhatsAppEventType(value);
+
       // Find matching routes
-      const routes = await findMatchingRoutes(admin, "whatsapp", phoneNumberId);
+      const allRoutes = await findMatchingRoutes(admin, "whatsapp", phoneNumberId);
+
+      if (allRoutes.length === 0) {
+        console.log(`[webhook] No routes found for whatsapp source_id=${phoneNumberId}`);
+        continue;
+      }
+
+      // Filter routes by event type
+      const routes = allRoutes.filter((r) => routeAcceptsEventType(r, eventType));
 
       if (routes.length === 0) {
-        console.log(`[webhook] No routes found for whatsapp source_id=${phoneNumberId}`);
-        // Log to first workspace we can find (best effort)
+        console.log(`[webhook] ${allRoutes.length} routes matched but none accept event_type=${eventType}`);
+        await writeLog(
+          admin,
+          allRoutes[0]?.workspace_id || null,
+          "info",
+          "webhook",
+          "webhook.filtered",
+          `WhatsApp webhook filtrado: event_type=${eventType} não aceito por nenhuma rota`,
+          { waba_id: entry.id, field: change.field, phone_number_id: phoneNumberId, event_type: eventType, routes_checked: allRoutes.length },
+        );
         continue;
       }
 
@@ -335,8 +392,8 @@ async function processWhatsAppEntries(
         "info",
         "webhook",
         "webhook.received",
-        `WhatsApp webhook recebido: ${change.field} de phone_number_id=${phoneNumberId}`,
-        { waba_id: entry.id, field: change.field, phone_number_id: phoneNumberId, routes_matched: routes.length },
+        `WhatsApp webhook recebido: ${change.field} (${eventType}) de phone_number_id=${phoneNumberId}`,
+        { waba_id: entry.id, field: change.field, phone_number_id: phoneNumberId, event_type: eventType, routes_matched: routes.length, routes_total: allRoutes.length },
       );
 
       // Create delivery events and deliver

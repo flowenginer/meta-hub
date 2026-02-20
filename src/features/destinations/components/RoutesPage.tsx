@@ -6,13 +6,21 @@ import { useState } from "react";
 import { useParams } from "react-router-dom";
 import { useRoutes } from "@/features/destinations/hooks/useRoutes";
 import { RouteForm } from "./RouteForm";
-import type { Route } from "@/types/destinations";
+import type { Route, FilterRules } from "@/types/destinations";
 
 const sourceLabels: Record<string, { label: string; emoji: string }> = {
   whatsapp: { label: "WhatsApp", emoji: "💬" },
   forms: { label: "Formulários", emoji: "📝" },
   ads: { label: "Ads", emoji: "📊" },
   webhook: { label: "Webhook", emoji: "🔗" },
+};
+
+const eventTypeLabels: Record<string, string> = {
+  messages: "Mensagens",
+  status_sent: "Enviado",
+  status_delivered: "Entregue",
+  status_read: "Lido",
+  status_failed: "Falha",
 };
 
 export function RoutesPage() {
@@ -147,8 +155,24 @@ export function RoutesPage() {
                   </div>
                 </div>
 
-                {route.name && (
-                  <div className="text-xs text-gray-500 mt-2">{route.name}</div>
+                {(route.name || (route.filter_rules as FilterRules)?.event_types?.length) && (
+                  <div className="mt-2 flex items-center gap-2 flex-wrap">
+                    {route.name && (
+                      <span className="text-xs text-gray-500">{route.name}</span>
+                    )}
+                    {(route.filter_rules as FilterRules)?.event_types?.length ? (
+                      <div className="flex items-center gap-1">
+                        {(route.filter_rules as FilterRules).event_types!.map((et) => (
+                          <span
+                            key={et}
+                            className="text-xs px-1.5 py-0.5 rounded bg-blue-50 text-blue-700"
+                          >
+                            {eventTypeLabels[et] || et}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
                 )}
               </div>
             );
