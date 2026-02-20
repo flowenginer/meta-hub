@@ -23,6 +23,7 @@ const META_SCOPES = [
   "pages_show_list",
   "pages_read_engagement",
   "pages_manage_metadata",
+  "pages_manage_ads",
   "whatsapp_business_management",
   "whatsapp_business_messaging",
   "ads_management",
@@ -650,8 +651,9 @@ async function syncMetaResources(
   }
 
   // --- Lead Forms (from pages using Page Access Tokens) ---
-  // Step 1: Get pages with their page tokens (avoids needing pages_manage_ads)
+  // Step 1: Get pages with their page tokens
   // Step 2: Use each page token to fetch leadgen_forms for that page
+  // Step 3: Subscribe each page to the leadgen webhook so we receive lead data in real time
   try {
     const pagesRes = await fetch(
       `https://graph.facebook.com/v21.0/me/accounts?fields=id,name,access_token&access_token=${accessToken}`
@@ -663,13 +665,36 @@ async function syncMetaResources(
       results.forms.error = pagesData.error.message;
     } else if (pagesData.data) {
       for (const page of pagesData.data) {
-        // Use Page Access Token to fetch leadgen_forms (works with leads_retrieval scope)
         const pageToken = page.access_token;
         if (!pageToken) {
           console.log(`[sync] No page token for page ${page.id} (${page.name}), skipping forms`);
           continue;
         }
 
+        // Subscribe page to leadgen webhook (so we receive lead data in real time)
+        try {
+          const subscribeRes = await fetch(
+            `https://graph.facebook.com/v21.0/${page.id}/subscribed_apps`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                subscribed_fields: ["leadgen"],
+                access_token: pageToken,
+              }),
+            }
+          );
+          const subscribeData = await subscribeRes.json();
+          if (subscribeData.success) {
+            console.log(`[sync] Page ${page.id} (${page.name}) subscribed to leadgen webhook`);
+          } else {
+            console.error(`[sync] Page ${page.id} leadgen subscription failed:`, JSON.stringify(subscribeData));
+          }
+        } catch (subErr) {
+          console.error(`[sync] Error subscribing page ${page.id} to leadgen:`, subErr);
+        }
+
+        // Fetch leadgen forms for this page
         try {
           const formsRes = await fetch(
             `https://graph.facebook.com/v21.0/${page.id}/leadgen_forms?fields=id,name,status&access_token=${pageToken}`
