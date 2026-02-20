@@ -451,6 +451,7 @@ async function syncMetaResources(
                   whatsapp_business_id: waba.id,
                   display_name: phone.verified_name || waba.name,
                   quality_rating: phone.quality_rating || null,
+                  webhook_subscribed: false,
                   status: "active",
                   deleted_at: null,
                 },
