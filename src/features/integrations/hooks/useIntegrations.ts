@@ -93,6 +93,33 @@ async function syncResources(integrationId: string): Promise<SyncResponse> {
   return data;
 }
 
+/** Save a manually-generated access token (e.g. from Graph API Explorer) */
+async function saveManualToken(workspaceId: string, accessToken: string): Promise<{
+  success: boolean;
+  integration_id: string;
+  meta_user: { id: string; name: string };
+  scopes: string[];
+  token_type: string;
+  sync: unknown;
+}> {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) throw new Error("Not authenticated");
+
+  const res = await fetch(getEdgeFunctionUrl("meta-oauth/manual-token"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${session.access_token}`,
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify({ workspace_id: workspaceId, access_token: accessToken }),
+  });
+
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Failed to save manual token");
+  return data;
+}
+
 /** Disconnect integration */
 async function disconnectIntegration(integrationId: string): Promise<void> {
   const { data: { session } } = await supabase.auth.getSession();
@@ -184,6 +211,14 @@ export function useIntegrations(workspaceId: string) {
     },
   });
 
+  const manualTokenMutation = useMutation({
+    mutationFn: (accessToken: string) => saveManualToken(workspaceId, accessToken),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: integrationsKey(workspaceId) });
+      queryClient.invalidateQueries({ queryKey: ["meta-resources"] });
+    },
+  });
+
   return {
     integrations: integrationsQuery.data || [],
     isLoading: integrationsQuery.isLoading,
@@ -197,6 +232,9 @@ export function useIntegrations(workspaceId: string) {
     syncResources: syncMutation.mutateAsync,
     isSyncing: syncMutation.isPending,
     lastSyncResult: syncMutation.data,
+    saveManualToken: manualTokenMutation.mutateAsync,
+    isSavingManualToken: manualTokenMutation.isPending,
+    manualTokenResult: manualTokenMutation.data,
     refetch: integrationsQuery.refetch,
   };
 }

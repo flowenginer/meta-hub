@@ -727,6 +727,136 @@ async function syncMetaResources(
 }
 
 // ---------------------------------------------------------------------------
+// Route: POST /manual-token — Save a manually-generated access token
+// (e.g. from Graph API Explorer) and sync resources
+// ---------------------------------------------------------------------------
+async function handleManualToken(req: Request): Promise<Response> {
+  const user = await getUser(req);
+  const { workspace_id, access_token } = await req.json();
+
+  if (!workspace_id) return errorResponse("workspace_id is required");
+  if (!access_token) return errorResponse("access_token is required");
+
+  const admin = adminClient();
+
+  // Verify user belongs to workspace
+  const { data: member } = await admin
+    .from("workspace_members")
+    .select("id")
+    .eq("workspace_id", workspace_id)
+    .eq("user_id", user.id)
+    .is("deleted_at", null)
+    .single();
+
+  if (!member) return errorResponse("Not a member of this workspace", 403);
+
+  try {
+    // Validate token by fetching user info from Meta
+    const meRes = await fetch(
+      `https://graph.facebook.com/v21.0/me?fields=id,name&access_token=${access_token}`
+    );
+    const meData = await meRes.json();
+
+    if (meData.error) {
+      return errorResponse(`Invalid token: ${meData.error.message}`, 400);
+    }
+
+    // Fetch granted scopes
+    const scopesRes = await fetch(
+      `https://graph.facebook.com/v21.0/me/permissions?access_token=${access_token}`
+    );
+    const scopesData = await scopesRes.json();
+    const grantedScopes = (scopesData.data || [])
+      .filter((p: { status: string }) => p.status === "granted")
+      .map((p: { permission: string }) => p.permission);
+
+    // Try to exchange for long-lived token (may fail if already long-lived)
+    let finalToken = access_token;
+    let expiresIn = 5184000; // default 60 days
+
+    try {
+      const longTokenUrl = new URL("https://graph.facebook.com/v21.0/oauth/access_token");
+      longTokenUrl.searchParams.set("grant_type", "fb_exchange_token");
+      longTokenUrl.searchParams.set("client_id", META_APP_ID);
+      longTokenUrl.searchParams.set("client_secret", META_APP_SECRET);
+      longTokenUrl.searchParams.set("fb_exchange_token", access_token);
+
+      const longTokenRes = await fetch(longTokenUrl.toString());
+      const longTokenData = await longTokenRes.json();
+
+      if (!longTokenData.error && longTokenData.access_token) {
+        finalToken = longTokenData.access_token;
+        expiresIn = longTokenData.expires_in || 5184000;
+        console.log("[manual-token] Exchanged for long-lived token");
+      } else {
+        console.log("[manual-token] Could not exchange for long-lived token, using as-is");
+      }
+    } catch {
+      console.log("[manual-token] Long-lived exchange failed, using original token");
+    }
+
+    // Check if integration already exists for this workspace
+    const { data: existing } = await admin
+      .from("integrations")
+      .select("id")
+      .eq("workspace_id", workspace_id)
+      .eq("provider", "meta")
+      .is("deleted_at", null)
+      .single();
+
+    const integrationPayload = {
+      workspace_id,
+      provider: "meta",
+      display_name: meData.name || "Meta Account",
+      status: "connected",
+      connected_by: user.id,
+      scopes_granted: grantedScopes,
+      settings: {
+        meta_user_id: meData.id,
+        access_token: finalToken,
+        token_expires_at: new Date(Date.now() + expiresIn * 1000).toISOString(),
+      },
+      last_synced_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    let integrationId: string;
+
+    if (existing) {
+      await admin
+        .from("integrations")
+        .update(integrationPayload)
+        .eq("id", existing.id);
+      integrationId = existing.id;
+    } else {
+      const { data: newIntegration, error: insertError } = await admin
+        .from("integrations")
+        .insert(integrationPayload)
+        .select("id")
+        .single();
+
+      if (insertError) throw new Error(insertError.message);
+      integrationId = newIntegration.id;
+    }
+
+    // Sync Meta resources
+    const syncResults = await syncMetaResources(admin, integrationId, finalToken);
+
+    return json({
+      success: true,
+      integration_id: integrationId,
+      meta_user: { id: meData.id, name: meData.name },
+      scopes: grantedScopes,
+      token_type: finalToken !== access_token ? "long_lived" : "original",
+      sync: syncResults,
+    });
+  } catch (err) {
+    console.error("[manual-token] Error:", err);
+    return errorResponse((err as Error).message, 500);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main Router
 // ---------------------------------------------------------------------------
 serve(async (req: Request) => {
@@ -750,10 +880,12 @@ serve(async (req: Request) => {
         return await handleDisconnect(req);
       case "sync":
         return await handleSync(req);
+      case "manual-token":
+        return await handleManualToken(req);
       case "health":
         // Health check — verify deployed version and env vars (no secrets exposed)
         return json({
-          version: "v14",
+          version: "v15",
           ok: true,
           timestamp: new Date().toISOString(),
           env: {
