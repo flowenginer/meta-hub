@@ -43,6 +43,7 @@ async function startOAuth(workspaceId: string): Promise<StartOAuthResponse> {
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${session.access_token}`,
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
     },
     body: JSON.stringify({ workspace_id: workspaceId }),
   });
@@ -62,6 +63,7 @@ async function refreshIntegration(integrationId: string): Promise<void> {
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${session.access_token}`,
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
     },
     body: JSON.stringify({ integration_id: integrationId }),
   });
@@ -80,6 +82,7 @@ async function disconnectIntegration(integrationId: string): Promise<void> {
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${session.access_token}`,
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
     },
     body: JSON.stringify({ integration_id: integrationId }),
   });
