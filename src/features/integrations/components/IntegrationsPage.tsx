@@ -11,8 +11,9 @@ import type { Integration } from "@/types/integrations";
 
 export function IntegrationsPage() {
   const { workspaceId } = useParams<{ workspaceId: string }>();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [selectedIntegration, setSelectedIntegration] = useState<Integration | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const {
     integrations,
@@ -26,20 +27,23 @@ export function IntegrationsPage() {
   } = useIntegrations(workspaceId!);
 
   const justConnected = searchParams.get("connected") === "true";
+  const callbackError = searchParams.get("error");
 
   const handleConnect = async () => {
+    setErrorMessage(null);
     try {
       await startOAuth();
     } catch (err) {
-      console.error("OAuth start failed:", err);
+      setErrorMessage((err as Error).message || "Falha ao iniciar conexão com o Meta");
     }
   };
 
   const handleRefresh = async (integrationId: string) => {
+    setErrorMessage(null);
     try {
       await refreshIntegration(integrationId);
     } catch (err) {
-      console.error("Refresh failed:", err);
+      setErrorMessage((err as Error).message || "Falha ao atualizar token");
     }
   };
 
@@ -47,13 +51,21 @@ export function IntegrationsPage() {
     if (!confirm("Tem certeza que deseja desconectar esta integração? Todos os dados serão removidos.")) {
       return;
     }
+    setErrorMessage(null);
     try {
       await disconnectIntegration(integrationId);
       if (selectedIntegration?.id === integrationId) {
         setSelectedIntegration(null);
       }
     } catch (err) {
-      console.error("Disconnect failed:", err);
+      setErrorMessage((err as Error).message || "Falha ao desconectar");
+    }
+  };
+
+  const dismissMessages = () => {
+    setErrorMessage(null);
+    if (justConnected || callbackError) {
+      setSearchParams({}, { replace: true });
     }
   };
 
@@ -83,8 +95,16 @@ export function IntegrationsPage() {
       </div>
 
       {justConnected && (
-        <div className="bg-green-50 text-green-700 p-4 rounded-lg mb-6 text-sm">
-          Integração conectada com sucesso! Os recursos do Meta foram sincronizados.
+        <div className="bg-green-50 text-green-700 p-4 rounded-lg mb-6 text-sm flex items-center justify-between">
+          <span>Integração conectada com sucesso! Os recursos do Meta foram sincronizados.</span>
+          <button onClick={dismissMessages} className="text-green-500 hover:text-green-700 ml-4">&times;</button>
+        </div>
+      )}
+
+      {(callbackError || errorMessage) && (
+        <div className="bg-red-50 text-red-700 p-4 rounded-lg mb-6 text-sm flex items-center justify-between">
+          <span>{callbackError ? decodeURIComponent(callbackError) : errorMessage}</span>
+          <button onClick={dismissMessages} className="text-red-500 hover:text-red-700 ml-4">&times;</button>
         </div>
       )}
 
