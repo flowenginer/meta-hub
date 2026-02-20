@@ -13,12 +13,14 @@ export function IntegrationsPage() {
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const [searchParams] = useSearchParams();
   const [selectedIntegration, setSelectedIntegration] = useState<Integration | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const {
     integrations,
     isLoading,
     startOAuth,
     isStartingOAuth,
+    startOAuthError,
     refreshIntegration,
     isRefreshing,
     disconnectIntegration,
@@ -28,18 +30,22 @@ export function IntegrationsPage() {
   const justConnected = searchParams.get("connected") === "true";
 
   const handleConnect = async () => {
+    setActionError(null);
     try {
       await startOAuth();
     } catch (err) {
-      console.error("OAuth start failed:", err);
+      const message = err instanceof Error ? err.message : "Erro ao conectar";
+      setActionError(message);
     }
   };
 
   const handleRefresh = async (integrationId: string) => {
+    setActionError(null);
     try {
       await refreshIntegration(integrationId);
     } catch (err) {
-      console.error("Refresh failed:", err);
+      const message = err instanceof Error ? err.message : "Erro ao atualizar";
+      setActionError(message);
     }
   };
 
@@ -47,13 +53,15 @@ export function IntegrationsPage() {
     if (!confirm("Tem certeza que deseja desconectar esta integração? Todos os dados serão removidos.")) {
       return;
     }
+    setActionError(null);
     try {
       await disconnectIntegration(integrationId);
       if (selectedIntegration?.id === integrationId) {
         setSelectedIntegration(null);
       }
     } catch (err) {
-      console.error("Disconnect failed:", err);
+      const message = err instanceof Error ? err.message : "Erro ao desconectar";
+      setActionError(message);
     }
   };
 
@@ -85,6 +93,18 @@ export function IntegrationsPage() {
       {justConnected && (
         <div className="bg-green-50 text-green-700 p-4 rounded-lg mb-6 text-sm">
           Integração conectada com sucesso! Os recursos do Meta foram sincronizados.
+        </div>
+      )}
+
+      {actionError && (
+        <div className="bg-red-50 text-red-700 p-4 rounded-lg mb-6 text-sm flex items-center justify-between">
+          <span>{actionError}</span>
+          <button
+            onClick={() => setActionError(null)}
+            className="ml-4 text-red-500 hover:text-red-700 font-medium text-xs"
+          >
+            Fechar
+          </button>
         </div>
       )}
 

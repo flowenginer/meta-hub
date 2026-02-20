@@ -2,6 +2,7 @@
 // Hook: useIntegrations — Integration management with TanStack Query
 // ============================================================================
 
+import { useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase, getEdgeFunctionUrl } from "@/lib/supabase";
 import type {
@@ -130,10 +131,21 @@ export function useIntegrations(workspaceId: string) {
   const startOAuthMutation = useMutation({
     mutationFn: () => startOAuth(workspaceId),
     onSuccess: (data) => {
-      // Open OAuth URL in new window
+      // Open OAuth URL in popup
       window.open(data.url, "_blank", "width=600,height=700");
     },
   });
+
+  // Listen for OAuth callback message from popup
+  useEffect(() => {
+    function handleMessage(event: MessageEvent) {
+      if (event.data?.type === "meta-oauth-complete") {
+        queryClient.invalidateQueries({ queryKey: integrationsKey(workspaceId) });
+      }
+    }
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, [workspaceId, queryClient]);
 
   const refreshMutation = useMutation({
     mutationFn: refreshIntegration,
@@ -155,6 +167,7 @@ export function useIntegrations(workspaceId: string) {
     error: integrationsQuery.error,
     startOAuth: startOAuthMutation.mutateAsync,
     isStartingOAuth: startOAuthMutation.isPending,
+    startOAuthError: startOAuthMutation.error,
     refreshIntegration: refreshMutation.mutateAsync,
     isRefreshing: refreshMutation.isPending,
     disconnectIntegration: disconnectMutation.mutateAsync,
