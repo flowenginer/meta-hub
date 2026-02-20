@@ -305,6 +305,11 @@ async function processWhatsAppEntries(
       const metadata = value.metadata as { phone_number_id?: string } | undefined;
       const phoneNumberId = metadata?.phone_number_id || null;
 
+      // Extract unique event ID from the payload (message ID or status ID)
+      const messages = value.messages as Array<{ id?: string }> | undefined;
+      const statuses = value.statuses as Array<{ id?: string }> | undefined;
+      const sourceEventId = messages?.[0]?.id || statuses?.[0]?.id || crypto.randomUUID();
+
       // Build the payload to forward
       const payload = {
         object: "whatsapp_business_account",
@@ -343,7 +348,7 @@ async function processWhatsAppEntries(
             route_id: route.route_id,
             destination_id: route.destination_id,
             source_type: "whatsapp",
-            source_event_id: phoneNumberId,
+            source_event_id: sourceEventId,
             payload,
             status: "pending",
             next_retry_at: new Date().toISOString(),
