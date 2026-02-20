@@ -4,23 +4,40 @@
 
 import { useState } from "react";
 import { useMetaResources } from "@/features/integrations/hooks/useIntegrations";
+import type { SyncResponse } from "@/types/integrations";
 
 interface Props {
   integrationId: string;
+  onSync: (integrationId: string) => Promise<SyncResponse>;
+  isSyncing: boolean;
 }
 
 type Tab = "whatsapp" | "ads" | "forms";
 
 const tabs: { key: Tab; label: string; emoji: string }[] = [
-  { key: "whatsapp", label: "WhatsApp", emoji: "💬" },
-  { key: "ads", label: "Ad Accounts", emoji: "📊" },
-  { key: "forms", label: "Formulários", emoji: "📝" },
+  { key: "whatsapp", label: "WhatsApp", emoji: "\u{1F4AC}" },
+  { key: "ads", label: "Ad Accounts", emoji: "\u{1F4CA}" },
+  { key: "forms", label: "Formul\u00e1rios", emoji: "\u{1F4DD}" },
 ];
 
-export function MetaResourcesPanel({ integrationId }: Props) {
+export function MetaResourcesPanel({ integrationId, onSync, isSyncing }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>("whatsapp");
-  const { whatsappNumbers, adAccounts, forms, isLoading } =
+  const [syncResult, setSyncResult] = useState<SyncResponse | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const { whatsappNumbers, adAccounts, forms, isLoading, refetch } =
     useMetaResources(integrationId);
+
+  const handleSync = async () => {
+    setSyncError(null);
+    setSyncResult(null);
+    try {
+      const result = await onSync(integrationId);
+      setSyncResult(result);
+      refetch();
+    } catch (err) {
+      setSyncError((err as Error).message);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -32,8 +49,79 @@ export function MetaResourcesPanel({ integrationId }: Props) {
     );
   }
 
+  const isEmpty = whatsappNumbers.length === 0 && adAccounts.length === 0 && forms.length === 0;
+
   return (
     <div className="bg-white border rounded-lg overflow-hidden">
+      {/* Header with sync button */}
+      <div className="flex items-center justify-between px-4 pt-4 pb-2">
+        <h3 className="text-sm font-semibold text-gray-700">Recursos Meta</h3>
+        <button
+          onClick={handleSync}
+          disabled={isSyncing}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50
+                     rounded-md hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          <svg
+            className={`w-3.5 h-3.5 ${isSyncing ? "animate-spin" : ""}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+            />
+          </svg>
+          {isSyncing ? "Sincronizando..." : "Sincronizar recursos"}
+        </button>
+      </div>
+
+      {/* Sync result feedback */}
+      {syncResult && (
+        <div className="mx-4 mb-2 p-3 bg-blue-50 rounded-lg text-xs">
+          <div className="font-medium text-blue-800 mb-1">Resultado da sincroniza&ccedil;&atilde;o:</div>
+          <div className="space-y-0.5 text-blue-700">
+            <div>
+              WhatsApp: {syncResult.sync.whatsapp.synced} sincronizado(s)
+              {syncResult.sync.whatsapp.error && (
+                <span className="text-red-600 ml-1">({syncResult.sync.whatsapp.error})</span>
+              )}
+            </div>
+            <div>
+              Ad Accounts: {syncResult.sync.adAccounts.synced} sincronizado(s)
+              {syncResult.sync.adAccounts.error && (
+                <span className="text-red-600 ml-1">({syncResult.sync.adAccounts.error})</span>
+              )}
+            </div>
+            <div>
+              Formul&aacute;rios: {syncResult.sync.forms.synced} sincronizado(s)
+              {syncResult.sync.forms.error && (
+                <span className="text-red-600 ml-1">({syncResult.sync.forms.error})</span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {syncError && (
+        <div className="mx-4 mb-2 p-3 bg-red-50 rounded-lg text-xs text-red-700">
+          Erro ao sincronizar: {syncError}
+        </div>
+      )}
+
+      {/* Empty state with helpful message */}
+      {isEmpty && !syncResult && (
+        <div className="mx-4 mb-2 p-4 bg-yellow-50 rounded-lg text-sm text-center">
+          <p className="text-yellow-800 font-medium mb-1">Nenhum recurso encontrado</p>
+          <p className="text-yellow-700 text-xs">
+            Clique em "Sincronizar recursos" para buscar seus n&uacute;meros WhatsApp, contas de an&uacute;ncio e formul&aacute;rios do Meta.
+          </p>
+        </div>
+      )}
+
       {/* Tabs */}
       <div className="flex border-b">
         {tabs.map((tab) => {
@@ -66,7 +154,7 @@ export function MetaResourcesPanel({ integrationId }: Props) {
           <div>
             {whatsappNumbers.length === 0 ? (
               <p className="text-gray-500 text-sm text-center py-4">
-                Nenhum número WhatsApp encontrado. Verifique se sua conta Meta tem acesso
+                Nenhum n&uacute;mero WhatsApp encontrado. Verifique se sua conta Meta tem acesso
                 ao WhatsApp Business API.
               </p>
             ) : (
@@ -81,7 +169,7 @@ export function MetaResourcesPanel({ integrationId }: Props) {
                         {num.display_name || num.phone_number}
                       </div>
                       <div className="text-xs text-gray-500">
-                        {num.phone_number} • WABA: {num.whatsapp_business_id}
+                        {num.phone_number} &bull; WABA: {num.whatsapp_business_id}
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
@@ -111,7 +199,7 @@ export function MetaResourcesPanel({ integrationId }: Props) {
           <div>
             {adAccounts.length === 0 ? (
               <p className="text-gray-500 text-sm text-center py-4">
-                Nenhuma conta de anúncio encontrada. Verifique as permissões da conta Meta.
+                Nenhuma conta de an&uacute;ncio encontrada. Verifique as permiss&otilde;es da conta Meta.
               </p>
             ) : (
               <div className="space-y-2">
@@ -125,7 +213,7 @@ export function MetaResourcesPanel({ integrationId }: Props) {
                         {acc.name || acc.ad_account_id}
                       </div>
                       <div className="text-xs text-gray-500">
-                        {acc.ad_account_id} • {acc.currency} • {acc.timezone}
+                        {acc.ad_account_id} &bull; {acc.currency} &bull; {acc.timezone}
                       </div>
                     </div>
                     <span
@@ -148,8 +236,8 @@ export function MetaResourcesPanel({ integrationId }: Props) {
           <div>
             {forms.length === 0 ? (
               <p className="text-gray-500 text-sm text-center py-4">
-                Nenhum formulário de lead encontrado. Verifique se você tem formulários
-                criados nas suas Páginas do Facebook.
+                Nenhum formul&aacute;rio de lead encontrado. Verifique se voc&ecirc; tem formul&aacute;rios
+                criados nas suas P&aacute;ginas do Facebook.
               </p>
             ) : (
               <div className="space-y-2">
@@ -164,7 +252,7 @@ export function MetaResourcesPanel({ integrationId }: Props) {
                       </div>
                       <div className="text-xs text-gray-500">
                         ID: {form.form_id}
-                        {form.details?.page_name ? ` • Página: ${String(form.details.page_name)}` : null}
+                        {form.details?.page_name ? ` \u2022 P\u00e1gina: ${String(form.details.page_name)}` : null}
                       </div>
                     </div>
                     <span

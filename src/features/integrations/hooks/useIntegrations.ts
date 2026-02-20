@@ -10,6 +10,7 @@ import type {
   MetaAdAccount,
   MetaForm,
   StartOAuthResponse,
+  SyncResponse,
 } from "@/types/integrations";
 
 function integrationsKey(workspaceId: string) {
@@ -70,6 +71,26 @@ async function refreshIntegration(integrationId: string): Promise<void> {
 
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "Failed to refresh");
+}
+
+/** Sync Meta resources manually */
+async function syncResources(integrationId: string): Promise<SyncResponse> {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) throw new Error("Not authenticated");
+
+  const res = await fetch(getEdgeFunctionUrl("meta-oauth/sync"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${session.access_token}`,
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify({ integration_id: integrationId }),
+  });
+
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Failed to sync resources");
+  return data;
 }
 
 /** Disconnect integration */
@@ -142,6 +163,8 @@ export function useIntegrations(workspaceId: string) {
     mutationFn: refreshIntegration,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: integrationsKey(workspaceId) });
+      // Also invalidate meta resources since refresh re-syncs
+      queryClient.invalidateQueries({ queryKey: ["meta-resources"] });
     },
   });
 
@@ -149,6 +172,15 @@ export function useIntegrations(workspaceId: string) {
     mutationFn: disconnectIntegration,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: integrationsKey(workspaceId) });
+      queryClient.invalidateQueries({ queryKey: ["meta-resources"] });
+    },
+  });
+
+  const syncMutation = useMutation({
+    mutationFn: syncResources,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: integrationsKey(workspaceId) });
+      queryClient.invalidateQueries({ queryKey: ["meta-resources"] });
     },
   });
 
@@ -162,6 +194,9 @@ export function useIntegrations(workspaceId: string) {
     isRefreshing: refreshMutation.isPending,
     disconnectIntegration: disconnectMutation.mutateAsync,
     isDisconnecting: disconnectMutation.isPending,
+    syncResources: syncMutation.mutateAsync,
+    isSyncing: syncMutation.isPending,
+    lastSyncResult: syncMutation.data,
     refetch: integrationsQuery.refetch,
   };
 }
