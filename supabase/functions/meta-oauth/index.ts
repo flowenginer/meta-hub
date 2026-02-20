@@ -51,17 +51,15 @@ function adminClient() {
   });
 }
 
-/** Extract and verify user from JWT */
+/** Extract and verify user from JWT using service role */
 async function getUser(req: Request) {
   const authHeader = req.headers.get("Authorization");
   if (!authHeader) throw new Error("Missing Authorization header");
 
   const token = authHeader.replace("Bearer ", "");
-  const supabase = createClient(SUPABASE_URL, Deno.env.get("SUPABASE_ANON_KEY")!, {
-    global: { headers: { Authorization: `Bearer ${token}` } },
-  });
+  const admin = adminClient();
 
-  const { data: { user }, error } = await supabase.auth.getUser(token);
+  const { data: { user }, error } = await admin.auth.getUser(token);
   if (error || !user) throw new Error("Invalid token");
   return user;
 }
