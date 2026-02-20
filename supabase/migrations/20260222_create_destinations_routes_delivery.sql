@@ -1,6 +1,7 @@
 -- ============================================================================
 -- Migration: Create destinations, routes, delivery_events, delivery_attempts
 -- Tables for webhook forwarding pipeline
+-- Idempotent: safe to re-run
 -- ============================================================================
 
 -- ---------------------------------------------------------------------------
@@ -24,7 +25,7 @@ CREATE TABLE IF NOT EXISTS public.destinations (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_destinations_workspace ON public.destinations(workspace_id)
+CREATE INDEX IF NOT EXISTS idx_destinations_workspace ON public.destinations(workspace_id)
   WHERE deleted_at IS NULL;
 
 -- ---------------------------------------------------------------------------
@@ -48,9 +49,9 @@ CREATE TABLE IF NOT EXISTS public.routes (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_routes_workspace ON public.routes(workspace_id)
+CREATE INDEX IF NOT EXISTS idx_routes_workspace ON public.routes(workspace_id)
   WHERE deleted_at IS NULL;
-CREATE INDEX idx_routes_source ON public.routes(workspace_id, source_type)
+CREATE INDEX IF NOT EXISTS idx_routes_source ON public.routes(workspace_id, source_type)
   WHERE deleted_at IS NULL AND is_active = true;
 
 -- ---------------------------------------------------------------------------
@@ -77,10 +78,10 @@ CREATE TABLE IF NOT EXISTS public.delivery_events (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_delivery_events_workspace ON public.delivery_events(workspace_id)
+CREATE INDEX IF NOT EXISTS idx_delivery_events_workspace ON public.delivery_events(workspace_id)
   WHERE status != 'cancelled';
-CREATE INDEX idx_delivery_events_status ON public.delivery_events(workspace_id, status);
-CREATE INDEX idx_delivery_events_pending ON public.delivery_events(status, next_retry_at)
+CREATE INDEX IF NOT EXISTS idx_delivery_events_status ON public.delivery_events(workspace_id, status);
+CREATE INDEX IF NOT EXISTS idx_delivery_events_pending ON public.delivery_events(status, next_retry_at)
   WHERE status IN ('pending', 'failed');
 
 -- ---------------------------------------------------------------------------
@@ -100,10 +101,10 @@ CREATE TABLE IF NOT EXISTS public.delivery_attempts (
   attempted_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_delivery_attempts_event ON public.delivery_attempts(event_id);
+CREATE INDEX IF NOT EXISTS idx_delivery_attempts_event ON public.delivery_attempts(event_id);
 
 -- ---------------------------------------------------------------------------
--- 5. RLS Policies
+-- 5. RLS Policies (drop if exists to make idempotent)
 -- ---------------------------------------------------------------------------
 
 ALTER TABLE public.destinations ENABLE ROW LEVEL SECURITY;
@@ -111,7 +112,8 @@ ALTER TABLE public.routes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.delivery_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.delivery_attempts ENABLE ROW LEVEL SECURITY;
 
--- destinations: workspace members can CRUD
+-- destinations
+DROP POLICY IF EXISTS destinations_select ON public.destinations;
 CREATE POLICY destinations_select ON public.destinations
   FOR SELECT USING (
     EXISTS (
@@ -122,6 +124,7 @@ CREATE POLICY destinations_select ON public.destinations
     )
   );
 
+DROP POLICY IF EXISTS destinations_insert ON public.destinations;
 CREATE POLICY destinations_insert ON public.destinations
   FOR INSERT WITH CHECK (
     EXISTS (
@@ -132,6 +135,7 @@ CREATE POLICY destinations_insert ON public.destinations
     )
   );
 
+DROP POLICY IF EXISTS destinations_update ON public.destinations;
 CREATE POLICY destinations_update ON public.destinations
   FOR UPDATE USING (
     EXISTS (
@@ -142,7 +146,8 @@ CREATE POLICY destinations_update ON public.destinations
     )
   );
 
--- routes: workspace members can CRUD
+-- routes
+DROP POLICY IF EXISTS routes_select ON public.routes;
 CREATE POLICY routes_select ON public.routes
   FOR SELECT USING (
     EXISTS (
@@ -153,6 +158,7 @@ CREATE POLICY routes_select ON public.routes
     )
   );
 
+DROP POLICY IF EXISTS routes_insert ON public.routes;
 CREATE POLICY routes_insert ON public.routes
   FOR INSERT WITH CHECK (
     EXISTS (
@@ -163,6 +169,7 @@ CREATE POLICY routes_insert ON public.routes
     )
   );
 
+DROP POLICY IF EXISTS routes_update ON public.routes;
 CREATE POLICY routes_update ON public.routes
   FOR UPDATE USING (
     EXISTS (
@@ -173,7 +180,8 @@ CREATE POLICY routes_update ON public.routes
     )
   );
 
--- delivery_events: workspace members can read + update (for cancel)
+-- delivery_events
+DROP POLICY IF EXISTS delivery_events_select ON public.delivery_events;
 CREATE POLICY delivery_events_select ON public.delivery_events
   FOR SELECT USING (
     EXISTS (
@@ -184,6 +192,7 @@ CREATE POLICY delivery_events_select ON public.delivery_events
     )
   );
 
+DROP POLICY IF EXISTS delivery_events_update ON public.delivery_events;
 CREATE POLICY delivery_events_update ON public.delivery_events
   FOR UPDATE USING (
     EXISTS (
@@ -194,7 +203,8 @@ CREATE POLICY delivery_events_update ON public.delivery_events
     )
   );
 
--- delivery_attempts: workspace members can read
+-- delivery_attempts
+DROP POLICY IF EXISTS delivery_attempts_select ON public.delivery_attempts;
 CREATE POLICY delivery_attempts_select ON public.delivery_attempts
   FOR SELECT USING (
     EXISTS (
@@ -210,15 +220,15 @@ CREATE POLICY delivery_attempts_select ON public.delivery_attempts
 -- 6. Service role INSERT policies for Edge Functions
 -- ---------------------------------------------------------------------------
 
--- delivery_events: service role can insert (from webhook handler)
+DROP POLICY IF EXISTS delivery_events_service_insert ON public.delivery_events;
 CREATE POLICY delivery_events_service_insert ON public.delivery_events
   FOR INSERT WITH CHECK (true);
 
--- delivery_attempts: service role can insert (from delivery worker)
+DROP POLICY IF EXISTS delivery_attempts_service_insert ON public.delivery_attempts;
 CREATE POLICY delivery_attempts_service_insert ON public.delivery_attempts
   FOR INSERT WITH CHECK (true);
 
--- delivery_events: service role can update (from delivery worker)
+DROP POLICY IF EXISTS delivery_events_service_update ON public.delivery_events;
 CREATE POLICY delivery_events_service_update ON public.delivery_events
   FOR UPDATE USING (true);
 
