@@ -491,6 +491,52 @@ interface SyncResults {
   forms: { found: number; synced: number; error?: string; raw_response?: unknown };
 }
 
+/**
+ * Upsert with fallback: tries upsert first, if constraint is missing falls back
+ * to select-then-insert/update pattern.
+ */
+async function safeUpsert(
+  admin: ReturnType<typeof createClient>,
+  table: string,
+  row: Record<string, unknown>,
+  conflictColumns: string[],
+) {
+  // Try upsert first
+  const { error: upsertErr } = await admin
+    .from(table)
+    .upsert(row, { onConflict: conflictColumns.join(",") });
+
+  if (!upsertErr) return { error: null };
+
+  // If constraint error, fallback to select + insert/update
+  if (upsertErr.message.includes("ON CONFLICT")) {
+    console.log(`[sync] Upsert failed for ${table}, using fallback`);
+    const filter: Record<string, unknown> = {};
+    for (const col of conflictColumns) {
+      filter[col] = row[col];
+    }
+
+    let query = admin.from(table).select("id").limit(1);
+    for (const [k, v] of Object.entries(filter)) {
+      query = query.eq(k, v as string);
+    }
+    const { data: existing } = await query.single();
+
+    if (existing) {
+      const { error } = await admin
+        .from(table)
+        .update({ ...row, updated_at: new Date().toISOString() })
+        .eq("id", existing.id);
+      return { error };
+    } else {
+      const { error } = await admin.from(table).insert(row);
+      return { error };
+    }
+  }
+
+  return { error: upsertErr };
+}
+
 async function syncMetaResources(
   admin: ReturnType<typeof createClient>,
   integrationId: string,
@@ -519,25 +565,25 @@ async function syncMetaResources(
           const phones = waba.phone_numbers?.data || [];
           for (const phone of phones) {
             results.whatsapp.found++;
-            const { error: upsertErr } = await admin
-              .from("meta_whatsapp_numbers")
-              .upsert(
-                {
-                  integration_id: integrationId,
-                  phone_number: phone.display_phone_number,
-                  phone_number_id: phone.id,
-                  whatsapp_business_id: waba.id,
-                  display_name: phone.verified_name || waba.name,
-                  quality_rating: phone.quality_rating || null,
-                  webhook_subscribed: false,
-                  status: "active",
-                  deleted_at: null,
-                },
-                { onConflict: "integration_id,phone_number_id" }
-              );
-            if (upsertErr) {
-              console.error("[sync] WA upsert error:", upsertErr.message);
-              results.whatsapp.error = upsertErr.message;
+            const { error } = await safeUpsert(
+              admin,
+              "meta_whatsapp_numbers",
+              {
+                integration_id: integrationId,
+                phone_number: phone.display_phone_number,
+                phone_number_id: phone.id,
+                whatsapp_business_id: waba.id,
+                display_name: phone.verified_name || waba.name,
+                quality_rating: phone.quality_rating || null,
+                webhook_subscribed: false,
+                status: "active",
+                deleted_at: null,
+              },
+              ["integration_id", "phone_number_id"]
+            );
+            if (error) {
+              console.error("[sync] WA save error:", error.message);
+              results.whatsapp.error = error.message;
             } else {
               results.whatsapp.synced++;
             }
@@ -572,24 +618,24 @@ async function syncMetaResources(
           100: "pending_settlement", 101: "pending_closure",
         };
 
-        const { error: upsertErr } = await admin
-          .from("meta_ad_accounts")
-          .upsert(
-            {
-              integration_id: integrationId,
-              ad_account_id: account.account_id,
-              name: account.name,
-              currency: account.currency || "USD",
-              timezone: account.timezone_name || "UTC",
-              status: statusMap[account.account_status] || "unknown",
-              data: account,
-              deleted_at: null,
-            },
-            { onConflict: "integration_id,ad_account_id" }
-          );
-        if (upsertErr) {
-          console.error("[sync] Ad upsert error:", upsertErr.message);
-          results.adAccounts.error = upsertErr.message;
+        const { error } = await safeUpsert(
+          admin,
+          "meta_ad_accounts",
+          {
+            integration_id: integrationId,
+            ad_account_id: account.account_id,
+            name: account.name,
+            currency: account.currency || "USD",
+            timezone: account.timezone_name || "UTC",
+            status: statusMap[account.account_status] || "unknown",
+            data: account,
+            deleted_at: null,
+          },
+          ["integration_id", "ad_account_id"]
+        );
+        if (error) {
+          console.error("[sync] Ad save error:", error.message);
+          results.adAccounts.error = error.message;
         } else {
           results.adAccounts.synced++;
         }
@@ -603,24 +649,48 @@ async function syncMetaResources(
     console.error("[sync] Ad Accounts error:", err);
   }
 
-  // --- Lead Forms (from pages) ---
+  // --- Lead Forms (from pages using Page Access Tokens) ---
+  // Step 1: Get pages with their page tokens (avoids needing pages_manage_ads)
+  // Step 2: Use each page token to fetch leadgen_forms for that page
   try {
     const pagesRes = await fetch(
-      `https://graph.facebook.com/v21.0/me/accounts?fields=id,name,leadgen_forms{id,name,status}&access_token=${accessToken}`
+      `https://graph.facebook.com/v21.0/me/accounts?fields=id,name,access_token&access_token=${accessToken}`
     );
     const pagesData = await pagesRes.json();
-    console.log("[sync] Forms/Pages raw:", JSON.stringify(pagesData));
+    console.log("[sync] Pages raw:", JSON.stringify(pagesData));
 
     if (pagesData.error) {
       results.forms.error = pagesData.error.message;
     } else if (pagesData.data) {
       for (const page of pagesData.data) {
-        const pageForms = page.leadgen_forms?.data || [];
-        for (const form of pageForms) {
-          results.forms.found++;
-          const { error: upsertErr } = await admin
-            .from("meta_forms")
-            .upsert(
+        // Use Page Access Token to fetch leadgen_forms (works with leads_retrieval scope)
+        const pageToken = page.access_token;
+        if (!pageToken) {
+          console.log(`[sync] No page token for page ${page.id} (${page.name}), skipping forms`);
+          continue;
+        }
+
+        try {
+          const formsRes = await fetch(
+            `https://graph.facebook.com/v21.0/${page.id}/leadgen_forms?fields=id,name,status&access_token=${pageToken}`
+          );
+          const formsData = await formsRes.json();
+          console.log(`[sync] Forms for page ${page.id} (${page.name}):`, JSON.stringify(formsData));
+
+          if (formsData.error) {
+            console.error(`[sync] Forms error for page ${page.id}:`, formsData.error.message);
+            if (!results.forms.error) {
+              results.forms.error = `Page ${page.name}: ${formsData.error.message}`;
+            }
+            continue;
+          }
+
+          const pageForms = formsData.data || [];
+          for (const form of pageForms) {
+            results.forms.found++;
+            const { error } = await safeUpsert(
+              admin,
+              "meta_forms",
               {
                 integration_id: integrationId,
                 form_id: form.id,
@@ -630,14 +700,17 @@ async function syncMetaResources(
                 details: { page_name: page.name, ...form },
                 deleted_at: null,
               },
-              { onConflict: "integration_id,form_id" }
+              ["integration_id", "form_id"]
             );
-          if (upsertErr) {
-            console.error("[sync] Form upsert error:", upsertErr.message);
-            results.forms.error = upsertErr.message;
-          } else {
-            results.forms.synced++;
+            if (error) {
+              console.error("[sync] Form save error:", error.message);
+              results.forms.error = error.message;
+            } else {
+              results.forms.synced++;
+            }
           }
+        } catch (pageErr) {
+          console.error(`[sync] Error fetching forms for page ${page.id}:`, pageErr);
         }
       }
     }
@@ -651,6 +724,136 @@ async function syncMetaResources(
 
   console.log("[sync] Results:", JSON.stringify(results));
   return results;
+}
+
+// ---------------------------------------------------------------------------
+// Route: POST /manual-token — Save a manually-generated access token
+// (e.g. from Graph API Explorer) and sync resources
+// ---------------------------------------------------------------------------
+async function handleManualToken(req: Request): Promise<Response> {
+  const user = await getUser(req);
+  const { workspace_id, access_token } = await req.json();
+
+  if (!workspace_id) return errorResponse("workspace_id is required");
+  if (!access_token) return errorResponse("access_token is required");
+
+  const admin = adminClient();
+
+  // Verify user belongs to workspace
+  const { data: member } = await admin
+    .from("workspace_members")
+    .select("id")
+    .eq("workspace_id", workspace_id)
+    .eq("user_id", user.id)
+    .is("deleted_at", null)
+    .single();
+
+  if (!member) return errorResponse("Not a member of this workspace", 403);
+
+  try {
+    // Validate token by fetching user info from Meta
+    const meRes = await fetch(
+      `https://graph.facebook.com/v21.0/me?fields=id,name&access_token=${access_token}`
+    );
+    const meData = await meRes.json();
+
+    if (meData.error) {
+      return errorResponse(`Invalid token: ${meData.error.message}`, 400);
+    }
+
+    // Fetch granted scopes
+    const scopesRes = await fetch(
+      `https://graph.facebook.com/v21.0/me/permissions?access_token=${access_token}`
+    );
+    const scopesData = await scopesRes.json();
+    const grantedScopes = (scopesData.data || [])
+      .filter((p: { status: string }) => p.status === "granted")
+      .map((p: { permission: string }) => p.permission);
+
+    // Try to exchange for long-lived token (may fail if already long-lived)
+    let finalToken = access_token;
+    let expiresIn = 5184000; // default 60 days
+
+    try {
+      const longTokenUrl = new URL("https://graph.facebook.com/v21.0/oauth/access_token");
+      longTokenUrl.searchParams.set("grant_type", "fb_exchange_token");
+      longTokenUrl.searchParams.set("client_id", META_APP_ID);
+      longTokenUrl.searchParams.set("client_secret", META_APP_SECRET);
+      longTokenUrl.searchParams.set("fb_exchange_token", access_token);
+
+      const longTokenRes = await fetch(longTokenUrl.toString());
+      const longTokenData = await longTokenRes.json();
+
+      if (!longTokenData.error && longTokenData.access_token) {
+        finalToken = longTokenData.access_token;
+        expiresIn = longTokenData.expires_in || 5184000;
+        console.log("[manual-token] Exchanged for long-lived token");
+      } else {
+        console.log("[manual-token] Could not exchange for long-lived token, using as-is");
+      }
+    } catch {
+      console.log("[manual-token] Long-lived exchange failed, using original token");
+    }
+
+    // Check if integration already exists for this workspace
+    const { data: existing } = await admin
+      .from("integrations")
+      .select("id")
+      .eq("workspace_id", workspace_id)
+      .eq("provider", "meta")
+      .is("deleted_at", null)
+      .single();
+
+    const integrationPayload = {
+      workspace_id,
+      provider: "meta",
+      display_name: meData.name || "Meta Account",
+      status: "connected",
+      connected_by: user.id,
+      scopes_granted: grantedScopes,
+      settings: {
+        meta_user_id: meData.id,
+        access_token: finalToken,
+        token_expires_at: new Date(Date.now() + expiresIn * 1000).toISOString(),
+      },
+      last_synced_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    let integrationId: string;
+
+    if (existing) {
+      await admin
+        .from("integrations")
+        .update(integrationPayload)
+        .eq("id", existing.id);
+      integrationId = existing.id;
+    } else {
+      const { data: newIntegration, error: insertError } = await admin
+        .from("integrations")
+        .insert(integrationPayload)
+        .select("id")
+        .single();
+
+      if (insertError) throw new Error(insertError.message);
+      integrationId = newIntegration.id;
+    }
+
+    // Sync Meta resources
+    const syncResults = await syncMetaResources(admin, integrationId, finalToken);
+
+    return json({
+      success: true,
+      integration_id: integrationId,
+      meta_user: { id: meData.id, name: meData.name },
+      scopes: grantedScopes,
+      token_type: finalToken !== access_token ? "long_lived" : "original",
+      sync: syncResults,
+    });
+  } catch (err) {
+    console.error("[manual-token] Error:", err);
+    return errorResponse((err as Error).message, 500);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -677,10 +880,12 @@ serve(async (req: Request) => {
         return await handleDisconnect(req);
       case "sync":
         return await handleSync(req);
+      case "manual-token":
+        return await handleManualToken(req);
       case "health":
         // Health check — verify deployed version and env vars (no secrets exposed)
         return json({
-          version: "v12",
+          version: "v15",
           ok: true,
           timestamp: new Date().toISOString(),
           env: {

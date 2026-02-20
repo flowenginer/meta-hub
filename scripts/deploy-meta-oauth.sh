@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-PROJECT_REF="wpredsntrdkmqlyfqkz"
+PROJECT_REF="wpredsntrdkmqllyfqkz"
 
 # Colors
 RED='\033[0;31m'
