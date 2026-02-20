@@ -23,7 +23,6 @@ const META_SCOPES = [
   "pages_show_list",
   "pages_read_engagement",
   "pages_manage_metadata",
-  "pages_manage_ads",
   "whatsapp_business_management",
   "whatsapp_business_messaging",
   "ads_management",
@@ -650,41 +649,68 @@ async function syncMetaResources(
     console.error("[sync] Ad Accounts error:", err);
   }
 
-  // --- Lead Forms (from pages) ---
+  // --- Lead Forms (from pages using Page Access Tokens) ---
+  // Step 1: Get pages with their page tokens (avoids needing pages_manage_ads)
+  // Step 2: Use each page token to fetch leadgen_forms for that page
   try {
     const pagesRes = await fetch(
-      `https://graph.facebook.com/v21.0/me/accounts?fields=id,name,leadgen_forms{id,name,status}&access_token=${accessToken}`
+      `https://graph.facebook.com/v21.0/me/accounts?fields=id,name,access_token&access_token=${accessToken}`
     );
     const pagesData = await pagesRes.json();
-    console.log("[sync] Forms/Pages raw:", JSON.stringify(pagesData));
+    console.log("[sync] Pages raw:", JSON.stringify(pagesData));
 
     if (pagesData.error) {
       results.forms.error = pagesData.error.message;
     } else if (pagesData.data) {
       for (const page of pagesData.data) {
-        const pageForms = page.leadgen_forms?.data || [];
-        for (const form of pageForms) {
-          results.forms.found++;
-          const { error } = await safeUpsert(
-            admin,
-            "meta_forms",
-            {
-              integration_id: integrationId,
-              form_id: form.id,
-              page_id: page.id,
-              name: form.name,
-              status: form.status || "active",
-              details: { page_name: page.name, ...form },
-              deleted_at: null,
-            },
-            ["integration_id", "form_id"]
+        // Use Page Access Token to fetch leadgen_forms (works with leads_retrieval scope)
+        const pageToken = page.access_token;
+        if (!pageToken) {
+          console.log(`[sync] No page token for page ${page.id} (${page.name}), skipping forms`);
+          continue;
+        }
+
+        try {
+          const formsRes = await fetch(
+            `https://graph.facebook.com/v21.0/${page.id}/leadgen_forms?fields=id,name,status&access_token=${pageToken}`
           );
-          if (error) {
-            console.error("[sync] Form save error:", error.message);
-            results.forms.error = error.message;
-          } else {
-            results.forms.synced++;
+          const formsData = await formsRes.json();
+          console.log(`[sync] Forms for page ${page.id} (${page.name}):`, JSON.stringify(formsData));
+
+          if (formsData.error) {
+            console.error(`[sync] Forms error for page ${page.id}:`, formsData.error.message);
+            if (!results.forms.error) {
+              results.forms.error = `Page ${page.name}: ${formsData.error.message}`;
+            }
+            continue;
           }
+
+          const pageForms = formsData.data || [];
+          for (const form of pageForms) {
+            results.forms.found++;
+            const { error } = await safeUpsert(
+              admin,
+              "meta_forms",
+              {
+                integration_id: integrationId,
+                form_id: form.id,
+                page_id: page.id,
+                name: form.name,
+                status: form.status || "active",
+                details: { page_name: page.name, ...form },
+                deleted_at: null,
+              },
+              ["integration_id", "form_id"]
+            );
+            if (error) {
+              console.error("[sync] Form save error:", error.message);
+              results.forms.error = error.message;
+            } else {
+              results.forms.synced++;
+            }
+          }
+        } catch (pageErr) {
+          console.error(`[sync] Error fetching forms for page ${page.id}:`, pageErr);
         }
       }
     }
@@ -727,7 +753,7 @@ serve(async (req: Request) => {
       case "health":
         // Health check — verify deployed version and env vars (no secrets exposed)
         return json({
-          version: "v13",
+          version: "v14",
           ok: true,
           timestamp: new Date().toISOString(),
           env: {
