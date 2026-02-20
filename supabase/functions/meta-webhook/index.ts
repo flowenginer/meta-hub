@@ -311,17 +311,25 @@ function getWhatsAppEventType(value: Record<string, unknown>): string {
 
 // ---------------------------------------------------------------------------
 // Check if a route's filter_rules allow an event type
+// Handles all possible DB values: null, [], {}, { event_types: [...] }
 // ---------------------------------------------------------------------------
 function routeAcceptsEventType(
   route: MatchedRoute,
   eventType: string,
 ): boolean {
   const rules = route.filter_rules;
-  // No filter_rules or no event_types = accept everything
-  if (!rules || !rules.event_types || rules.event_types.length === 0) return true;
+
+  // No filter_rules = accept everything
+  if (!rules || Array.isArray(rules)) return true;
+
+  // No event_types array or empty = accept everything
+  const eventTypes = rules.event_types;
+  if (!eventTypes || !Array.isArray(eventTypes) || eventTypes.length === 0) return true;
+
   // Unknown event types always pass through (safety net)
   if (eventType === "unknown") return true;
-  return rules.event_types.includes(eventType);
+
+  return eventTypes.includes(eventType);
 }
 
 // ---------------------------------------------------------------------------
@@ -370,8 +378,18 @@ async function processWhatsAppEntries(
         continue;
       }
 
+      // Debug: log filter_rules for each route
+      for (const r of allRoutes) {
+        console.log(`[webhook] Route ${r.route_id} filter_rules=${JSON.stringify(r.filter_rules)} type=${typeof r.filter_rules} isArray=${Array.isArray(r.filter_rules)}`);
+      }
+
       // Filter routes by event type
-      const routes = allRoutes.filter((r) => routeAcceptsEventType(r, eventType));
+      console.log(`[webhook] Filtering ${allRoutes.length} routes for event_type=${eventType}`);
+      const routes = allRoutes.filter((r) => {
+        const accepted = routeAcceptsEventType(r, eventType);
+        console.log(`[webhook] Route ${r.route_id} accepts ${eventType}: ${accepted}`);
+        return accepted;
+      });
 
       if (routes.length === 0) {
         console.log(`[webhook] ${allRoutes.length} routes matched but none accept event_type=${eventType}`);
