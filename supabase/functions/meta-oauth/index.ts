@@ -23,6 +23,7 @@ const META_SCOPES = [
   "pages_show_list",
   "pages_read_engagement",
   "pages_manage_metadata",
+  "pages_manage_ads",
   "whatsapp_business_management",
   "whatsapp_business_messaging",
   "ads_management",
@@ -491,6 +492,52 @@ interface SyncResults {
   forms: { found: number; synced: number; error?: string; raw_response?: unknown };
 }
 
+/**
+ * Upsert with fallback: tries upsert first, if constraint is missing falls back
+ * to select-then-insert/update pattern.
+ */
+async function safeUpsert(
+  admin: ReturnType<typeof createClient>,
+  table: string,
+  row: Record<string, unknown>,
+  conflictColumns: string[],
+) {
+  // Try upsert first
+  const { error: upsertErr } = await admin
+    .from(table)
+    .upsert(row, { onConflict: conflictColumns.join(",") });
+
+  if (!upsertErr) return { error: null };
+
+  // If constraint error, fallback to select + insert/update
+  if (upsertErr.message.includes("ON CONFLICT")) {
+    console.log(`[sync] Upsert failed for ${table}, using fallback`);
+    const filter: Record<string, unknown> = {};
+    for (const col of conflictColumns) {
+      filter[col] = row[col];
+    }
+
+    let query = admin.from(table).select("id").limit(1);
+    for (const [k, v] of Object.entries(filter)) {
+      query = query.eq(k, v as string);
+    }
+    const { data: existing } = await query.single();
+
+    if (existing) {
+      const { error } = await admin
+        .from(table)
+        .update({ ...row, updated_at: new Date().toISOString() })
+        .eq("id", existing.id);
+      return { error };
+    } else {
+      const { error } = await admin.from(table).insert(row);
+      return { error };
+    }
+  }
+
+  return { error: upsertErr };
+}
+
 async function syncMetaResources(
   admin: ReturnType<typeof createClient>,
   integrationId: string,
@@ -519,25 +566,25 @@ async function syncMetaResources(
           const phones = waba.phone_numbers?.data || [];
           for (const phone of phones) {
             results.whatsapp.found++;
-            const { error: upsertErr } = await admin
-              .from("meta_whatsapp_numbers")
-              .upsert(
-                {
-                  integration_id: integrationId,
-                  phone_number: phone.display_phone_number,
-                  phone_number_id: phone.id,
-                  whatsapp_business_id: waba.id,
-                  display_name: phone.verified_name || waba.name,
-                  quality_rating: phone.quality_rating || null,
-                  webhook_subscribed: false,
-                  status: "active",
-                  deleted_at: null,
-                },
-                { onConflict: "integration_id,phone_number_id" }
-              );
-            if (upsertErr) {
-              console.error("[sync] WA upsert error:", upsertErr.message);
-              results.whatsapp.error = upsertErr.message;
+            const { error } = await safeUpsert(
+              admin,
+              "meta_whatsapp_numbers",
+              {
+                integration_id: integrationId,
+                phone_number: phone.display_phone_number,
+                phone_number_id: phone.id,
+                whatsapp_business_id: waba.id,
+                display_name: phone.verified_name || waba.name,
+                quality_rating: phone.quality_rating || null,
+                webhook_subscribed: false,
+                status: "active",
+                deleted_at: null,
+              },
+              ["integration_id", "phone_number_id"]
+            );
+            if (error) {
+              console.error("[sync] WA save error:", error.message);
+              results.whatsapp.error = error.message;
             } else {
               results.whatsapp.synced++;
             }
@@ -572,24 +619,24 @@ async function syncMetaResources(
           100: "pending_settlement", 101: "pending_closure",
         };
 
-        const { error: upsertErr } = await admin
-          .from("meta_ad_accounts")
-          .upsert(
-            {
-              integration_id: integrationId,
-              ad_account_id: account.account_id,
-              name: account.name,
-              currency: account.currency || "USD",
-              timezone: account.timezone_name || "UTC",
-              status: statusMap[account.account_status] || "unknown",
-              data: account,
-              deleted_at: null,
-            },
-            { onConflict: "integration_id,ad_account_id" }
-          );
-        if (upsertErr) {
-          console.error("[sync] Ad upsert error:", upsertErr.message);
-          results.adAccounts.error = upsertErr.message;
+        const { error } = await safeUpsert(
+          admin,
+          "meta_ad_accounts",
+          {
+            integration_id: integrationId,
+            ad_account_id: account.account_id,
+            name: account.name,
+            currency: account.currency || "USD",
+            timezone: account.timezone_name || "UTC",
+            status: statusMap[account.account_status] || "unknown",
+            data: account,
+            deleted_at: null,
+          },
+          ["integration_id", "ad_account_id"]
+        );
+        if (error) {
+          console.error("[sync] Ad save error:", error.message);
+          results.adAccounts.error = error.message;
         } else {
           results.adAccounts.synced++;
         }
@@ -618,23 +665,23 @@ async function syncMetaResources(
         const pageForms = page.leadgen_forms?.data || [];
         for (const form of pageForms) {
           results.forms.found++;
-          const { error: upsertErr } = await admin
-            .from("meta_forms")
-            .upsert(
-              {
-                integration_id: integrationId,
-                form_id: form.id,
-                page_id: page.id,
-                name: form.name,
-                status: form.status || "active",
-                details: { page_name: page.name, ...form },
-                deleted_at: null,
-              },
-              { onConflict: "integration_id,form_id" }
-            );
-          if (upsertErr) {
-            console.error("[sync] Form upsert error:", upsertErr.message);
-            results.forms.error = upsertErr.message;
+          const { error } = await safeUpsert(
+            admin,
+            "meta_forms",
+            {
+              integration_id: integrationId,
+              form_id: form.id,
+              page_id: page.id,
+              name: form.name,
+              status: form.status || "active",
+              details: { page_name: page.name, ...form },
+              deleted_at: null,
+            },
+            ["integration_id", "form_id"]
+          );
+          if (error) {
+            console.error("[sync] Form save error:", error.message);
+            results.forms.error = error.message;
           } else {
             results.forms.synced++;
           }
@@ -680,7 +727,7 @@ serve(async (req: Request) => {
       case "health":
         // Health check — verify deployed version and env vars (no secrets exposed)
         return json({
-          version: "v12",
+          version: "v13",
           ok: true,
           timestamp: new Date().toISOString(),
           env: {
