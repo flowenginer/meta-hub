@@ -65,13 +65,14 @@ async function getUser(req: Request) {
     throw new Error("Missing Authorization header");
   }
 
-  // Standard Supabase pattern: create a client scoped to this user's token
-  const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    global: { headers: { Authorization: authHeader } },
+  const token = authHeader.replace("Bearer ", "");
+
+  const client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 
-  const { data: { user }, error } = await userClient.auth.getUser();
+  // Pass token explicitly — avoids "Auth session missing" with persistSession: false
+  const { data: { user }, error } = await client.auth.getUser(token);
 
   if (error) throw new Error("Auth error: " + error.message);
   if (!user) throw new Error("User not found");
@@ -567,7 +568,7 @@ serve(async (req: Request) => {
       case "health":
         // Health check — verify deployed version and env vars (no secrets exposed)
         return json({
-          version: "v10",
+          version: "v11",
           ok: true,
           timestamp: new Date().toISOString(),
           env: {
