@@ -8,8 +8,11 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.0";
 
 // ---------------------------------------------------------------------------
 // Environment variables (set as Edge Function secrets in Supabase Dashboard)
+// SUPABASE_URL, SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY are
+// automatically injected by Supabase into every Edge Function.
 // ---------------------------------------------------------------------------
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const META_APP_ID = Deno.env.get("META_APP_ID")!;
 const META_APP_SECRET = Deno.env.get("META_APP_SECRET")!;
@@ -51,53 +54,29 @@ function adminClient() {
   });
 }
 
-/** Extract and verify user from JWT using admin API */
+/**
+ * Authenticate user using the standard Supabase Edge Function pattern.
+ * Creates a per-request Supabase client with the user's Authorization header,
+ * then calls auth.getUser() to validate the token against the Auth server.
+ */
 async function getUser(req: Request) {
-  // Step 1: Check Authorization header
   const authHeader = req.headers.get("Authorization");
-  console.log("[getUser] step1 authHeader present:", !!authHeader);
   if (!authHeader) {
-    console.log("[getUser] All headers:", JSON.stringify(Object.fromEntries(req.headers.entries())));
     throw new Error("Missing Authorization header");
   }
 
-  // Step 2: Extract token
-  const token = authHeader.replace("Bearer ", "");
-  console.log("[getUser] step2 token length:", token.length, "starts:", token.substring(0, 20));
+  // Standard Supabase pattern: create a client scoped to this user's token
+  const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    global: { headers: { Authorization: authHeader } },
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
 
-  // Step 3: Decode JWT payload
-  const parts = token.split(".");
-  if (parts.length !== 3) throw new Error("Malformed token: " + parts.length + " parts");
+  const { data: { user }, error } = await userClient.auth.getUser();
 
-  let payload: { sub?: string; exp?: number; role?: string };
-  try {
-    payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
-  } catch (e) {
-    throw new Error("Malformed token payload: " + (e as Error).message);
-  }
+  if (error) throw new Error("Auth error: " + error.message);
+  if (!user) throw new Error("User not found");
 
-  console.log("[getUser] step3 payload sub:", payload.sub, "role:", payload.role, "exp:", payload.exp);
-
-  if (!payload.sub) throw new Error("Token missing subject");
-
-  // Step 4: Check expiration
-  if (payload.exp && payload.exp * 1000 < Date.now()) {
-    throw new Error("Token expired at " + new Date(payload.exp * 1000).toISOString());
-  }
-
-  // Step 5: Verify user exists via admin API
-  console.log("[getUser] step5 calling admin.getUserById:", payload.sub);
-  console.log("[getUser] SUPABASE_URL:", SUPABASE_URL);
-  console.log("[getUser] SERVICE_ROLE_KEY present:", !!SUPABASE_SERVICE_ROLE_KEY, "length:", SUPABASE_SERVICE_ROLE_KEY?.length);
-
-  const admin = adminClient();
-  const { data, error } = await admin.auth.admin.getUserById(payload.sub);
-  console.log("[getUser] step5 result - error:", error?.message, "user:", !!data?.user);
-
-  if (error) throw new Error("Admin getUserById failed: " + error.message);
-  if (!data?.user) throw new Error("User not found for id: " + payload.sub);
-
-  return data.user;
+  return user;
 }
 
 /** JSON response helper */
@@ -585,19 +564,20 @@ serve(async (req: Request) => {
         return await handleRefresh(req);
       case "disconnect":
         return await handleDisconnect(req);
-      case "debug":
-        // Temporary debug endpoint — remove after fixing
+      case "health":
+        // Health check — verify deployed version and env vars (no secrets exposed)
         return json({
-          supabase_url: SUPABASE_URL,
-          service_role_key_present: !!SUPABASE_SERVICE_ROLE_KEY,
-          service_role_key_length: SUPABASE_SERVICE_ROLE_KEY?.length ?? 0,
-          service_role_key_prefix: SUPABASE_SERVICE_ROLE_KEY?.substring(0, 10) ?? "MISSING",
-          meta_app_id_present: !!META_APP_ID,
-          meta_app_secret_present: !!META_APP_SECRET,
-          app_url: APP_URL,
-          auth_header_present: !!req.headers.get("Authorization"),
-          auth_header_prefix: req.headers.get("Authorization")?.substring(0, 20) ?? "MISSING",
-          all_headers: Object.fromEntries(req.headers.entries()),
+          version: "v10",
+          ok: true,
+          timestamp: new Date().toISOString(),
+          env: {
+            supabase_url: !!SUPABASE_URL,
+            supabase_anon_key: !!SUPABASE_ANON_KEY,
+            service_role_key: !!SUPABASE_SERVICE_ROLE_KEY,
+            meta_app_id: !!META_APP_ID,
+            meta_app_secret: !!META_APP_SECRET,
+            app_url: APP_URL || "NOT SET",
+          },
         });
       default:
         return errorResponse(`Unknown route: ${path}`, 404);
